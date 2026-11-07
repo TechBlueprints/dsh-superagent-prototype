@@ -4,6 +4,8 @@ This cookbook shows how to extend dsh-superagent. It uses the terms in [001 Doma
 
 ## Add a Source
 
+A new forge (a code host like GitHub or Gitea) does not need a Source of its own: it needs a `ForgeClient` (`src/sources/forge-client.ts`) that maps the forge Source's calls to its API and its answers to the normalized records, its URL conventions, and a kind built with `forgeKind()`, as `src/sources/gitea.ts` and `src/sources/gitea-client.ts` do. The polling, Triggers, pull request rules, Channel and reads are the forge Source's. What follows is for a Source of another kind.
+
 This recipe implements a Source kind called `webhook`. It reads an imaginary message queue through an invented CLI, `hookq`, and converts messages to Triggers. All other interfaces are part of dsh-superagent.
 
 The implementation has four responsibilities: translate events, define receiving and authorization rules, provide replies and context, and maintain a polling loop. The numbered steps build those pieces in order.

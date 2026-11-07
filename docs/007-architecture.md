@@ -186,7 +186,11 @@ Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. 
 
 `SourceRegistry` (`registry.ts`) owns registered kinds and stored instances, and implements the Engine's `SourceScope`. Registration claims health entries on `HealthBoard`; duplicate claims and reserved `sync:` names are refused. A SourceContext writes only through its registration's claimed entries, so reports after unregistration do nothing.
 
-Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. `find` asks each kind that supports search.
+A kind has its own instance, whose id is the kind's id and which exists unstored. A kind that declares `multiple` (the forges) also has every stored instance `settings.sources[<kind>-<name>] = { enabled, kind, config }`. Triggers, Threads (`<instance>:<id>`), Channels, Policy parts and KV records name the instance id, so each instance has its own and the kinds' own instances keep theirs unchanged. A further instance's health entries are `<id>` for the entry named after its kind and `<id>:<name>` for the others. `kindOf`, `kindFor`, `instancesOf` and `healthNames` resolve them.
+
+Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. `find` asks each instance of each kind that supports search.
+
+The forge kinds (GitHub, Gitea) are one generic forge Source (`src/sources/forge*.ts`) over a `ForgeClient` per forge: `GithubClient` calls the agent's gh, `GiteaClient` the Gitea API with the token file. Setup resolves each enabled forge instance into a `ForgeAccount` of `Deployment.forges`; a Ticket's repository is `forgeOf` its Threads and origin (`src/app/forge-of.ts`).
 
 Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
 
