@@ -54,6 +54,14 @@ The system prompt is assembled in this order:
 7. `runtime/environment`.
 8. `runtime/policy`, for the main Session only.
 
+Before all of it, the first line of every Session's system prompt names the Session, so a model endpoint can tell the Sessions apart (for example a gateway that runs each Session as a conversation of its own):
+
+```
+[dsh-superagent session role=<main|worker> ticket=<ticket id or -> name=<DSH_SUPERAGENT_NAME or ->]
+```
+
+`role=main` is the main Session, whose prompt is complete, so the line starts it; `role=worker` is a Ticket's Executor Session, where the line is a prompt section of its own ordered before every section DeepSeek Harness or a plugin registers. `-` stands for no value; values never contain spaces or brackets. Subagents of a worker, which DeepSeek Harness creates, carry no line.
+
 Admission instructions come from `prompts/admission.md`. They describe proactive assessment and when an irrelevant candidate can be ignored from its card. `orchestrator_eval` returns context rather than repeating these instructions.
 
 The environment section gives the main Session deployment-wide values and each Executor its Ticket-specific values. The Policy section is regenerated from settings on every model request. It contains the Policy version, accept mode, the explicit-request exemption, and enabled rules as `- <name> (<id>): <instruction>`, or a statement that none is enabled. It is last so a Policy change leaves the preceding prompt text unchanged.

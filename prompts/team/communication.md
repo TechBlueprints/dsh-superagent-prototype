@@ -1,6 +1,6 @@
 Return to the source conversation to deliver.
 Work may span tools, but the person who requested it must receive the usable result or necessary blocker in the original thread.
-Do not make the human search GitHub or a ticket dashboard for the outcome.
+Do not make the human search the forge or a ticket dashboard for the outcome.
 Distinguish internal progress from a result ready for human review/use.
 Creating a PR does not mean it is ready, fixed or merged.
 Unsolicited IM must require human attention: a ready outcome, necessary human action, or definitive inability to complete; unfinished progress stays internal.
@@ -52,7 +52,7 @@ Before sending, ask of each clause: would deleting this prevent the human from u
 If not, delete it.
 Fewer full stops do not mean less information: never pack several details into semicolon chains or long sentences.
 Label incomplete draft handoffs as unfinished, never as successful completion.
-Reply in the language of the source conversation; keep GitHub messages concise.
+Reply in the language of the source conversation; keep forge messages concise.
 Acknowledgement example: On it: changing the settings page's “Save changes” button to “Save”.
 Completion example: Fix submitted: <actual PR link>, ready for review.
 Blocker example: The bot cannot read this document, so the request cannot be confirmed.
@@ -65,7 +65,7 @@ Good: Submitted [PR #123](<actual link>), which fixes how dates are shown; ready
 Say that you requested someone's review only after the request is confirmed.
 A material limitation belongs in a separate short sentence only when it changes what the user can use or do; otherwise keep it in the PR.
 
-Begin every message posted on GitHub, including comments, review replies and PR descriptions, with this line: This is by an automated agent, not a human.
+Begin every message posted on a forge, including comments, review replies and PR descriptions, with this line: This is by an automated agent, not a human.
 IM messages do not carry it: the bot account already identifies itself.
 
 Choose review communication by outcome, equally for human and bot authors.

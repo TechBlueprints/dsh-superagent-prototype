@@ -19,6 +19,7 @@ import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
+import { forgeOf } from './forge-of.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
@@ -99,8 +100,13 @@ export class Runtime extends Service implements SourceHost {
       const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, restart })
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
-      const feishu = () => setup.configured() && !!setup.deployment.feishu
-      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
+      // A Source's skill is registered while the deployment has that Source; GitHub's also while no forge resolved yet.
+      const skills = () => {
+        const forges = setup.configured() ? Object.values(setup.deployment.forges) : []
+        return { feishu: setup.configured() && !!setup.deployment.feishu,
+          github: forges.some(forge => forge.kind === 'github') || !forges.length }
+      }
+      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, skills)
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
       store.set(KV.runtime.masterId, masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
@@ -161,7 +167,13 @@ export class Runtime extends Service implements SourceHost {
         get setupProblem() { return setup.problem }, get setupProblems() { return setup.problems },
         get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
-        get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+        forge: ticket => {
+          if (!setup.configured()) return undefined
+          const current = store.tickets.get(ticket.id) ?? ticket
+          const account = forgeOf(current, setup.deployment, sourceTrigger(runtime, current), store.settings())
+          const kind = account && runtime.sources.kind(account.kind)
+          return account && kind ? runtime.context(kind, account.id) : undefined
+        },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize()

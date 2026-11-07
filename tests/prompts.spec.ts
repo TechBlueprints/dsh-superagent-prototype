@@ -120,6 +120,9 @@ it('registers the built-in Source skills, Feishu only with a Feishu bot, before 
     expect(skills[1]![1]).toContain('## CLI usage')
     expect(skills[2]![1]).toBe('Tag releases.')
     expect(new Prompts(store, () => 100000, variables, () => false).skills(config).map(([name]) => name)).toEqual(['github', 'release'])
+    // A Source's skill follows the Sources the deployment has.
+    expect(new Prompts(store, () => 100000, variables, () => ({ feishu: true, github: false })).skills(config).map(([name]) => name))
+      .toEqual(['feishu', 'release'])
   })
 })
 

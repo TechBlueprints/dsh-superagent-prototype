@@ -56,16 +56,19 @@ export const githubKind: SourceKind<GithubConfig> = forgeKind<GithubConfig>({
     explicit: { zh: '名单里的账号在 Issue 或评论里 @ 智能体的账号。', en: 'An account on the list mentions the agent\'s account in an Issue or a comment.' },
   },
   environment: {
+    // The generic DSH_SUPERAGENT_REPOSITORY* and FORGE_* variables name a ticket's repository on any forge; these keep their
+    // names for prepare commands and prompts written for the GitHub Source.
     variables: [
-      { key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: '这个来源监听的仓库，owner/name。智能体在这里开的 PR，分支最后一段是 DSH_SUPERAGENT_NAME 时（例如 agent/$DSH_SUPERAGENT_NAME）会关联到工单', en: 'The repository this Source watches, as owner/name. A PR the agent opens here from a branch whose last path segment is DSH_SUPERAGENT_NAME (for example agent/$DSH_SUPERAGENT_NAME) binds to the ticket' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: 'GitHub 来源监听的仓库，owner/name；工单在 GitHub 上时同 DSH_SUPERAGENT_REPOSITORY', en: 'The GitHub Source\'s repository, owner/name; on a GitHub ticket, DSH_SUPERAGENT_REPOSITORY' } },
       { key: 'DSH_SUPERAGENT_GITHUB_ACCOUNT', description: { zh: '智能体的 GitHub 账号；gh 以它登录，除自动合并外的 GitHub 操作都用 gh，不用其他账号或凭据', en: 'The agent\'s GitHub account. gh is signed in to it; use gh for every GitHub operation except auto-merge, and never another account or credential' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL', description: { zh: '智能体账号的提交邮箱。这里的 git 没有身份：按提示词写明的作者提交，没有写明时用智能体账号和这个邮箱', en: 'Commit email of the agent\'s account. git has no identity here: commit as the author these instructions name, or as the agent\'s account with this email when they name none' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', description: { zh: '接下工单的 Issue 或 PR 编号；工单不是从 GitHub 来的时为空', en: 'Number of the Issue or PR that started the ticket; empty when the ticket did not start on GitHub' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', description: { zh: '接下工单的 PR 的 head 引用 refs/pull/<编号>/head；不是 PR 时为空', en: 'Head ref refs/pull/<number>/head of the PR that started the ticket; empty when it was not a PR' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL', description: { zh: '这个账号的提交邮箱', en: 'Its commit email' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', description: { zh: '工单在 GitHub 上时同 DSH_SUPERAGENT_NUMBER', en: 'On a GitHub ticket, DSH_SUPERAGENT_NUMBER' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', description: { zh: '工单在 GitHub 上时同 DSH_SUPERAGENT_PR_HEAD', en: 'On a GitHub ticket, DSH_SUPERAGENT_PR_HEAD' } },
     ],
-    values: ({ deployment, trigger }) => {
-      const number = trigger?.threads[0]?.source === SOURCE ? Number(trigger.meta.number) || 0 : 0
-      const github = deployment.forges[SOURCE] ?? forgeOfKind(deployment, 'github')
+    // A ticket's are its GitHub repository's, and empty on another forge; outside a ticket, the GitHub Source's own.
+    values: ({ deployment, trigger, ticket, forge }) => {
+      const github = ticket ? forge?.kind === 'github' ? forge : undefined : deployment.forges[SOURCE] ?? forgeOfKind(deployment, 'github')
+      const number = github && trigger?.threads[0]?.source === github.id ? Number(trigger.meta.number) || 0 : 0
       return { DSH_SUPERAGENT_GITHUB_REPOSITORY: github?.repository ?? '', DSH_SUPERAGENT_GITHUB_ACCOUNT: github?.login ?? '', DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: github?.commitEmail ?? '', DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
         DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
     },

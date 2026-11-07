@@ -52,7 +52,7 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'models', holds: 'model providers, the DSH default and each role\'s model' },
   { name: 'models/<provider>', holds: 'one provider\'s models' },
   { name: 'feishu/<trigger-id>/…', holds: 'a Feishu original, as the dsh-superagent-feishu skill describes', executor: true },
-  { name: 'github/…', holds: 'a GitHub original, as the dsh-superagent-github skill describes', executor: true },
+  { name: '<forge>/…', holds: 'a forge original, as the dsh-superagent-github or -gitea skill describes; <forge> is the forge Source\'s id, such as github', executor: true },
 ]
 export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(resource => !executor || resource.executor)
   .map(resource => `${resource.name}: ${resource.holds}`).join('; ')
@@ -102,10 +102,10 @@ const trigger = (host: ResourceHost, id: string, ticketId?: string): Trigger => 
   return found
 }
 /** Fetch and cache a source resource on offset 0, serving subsequent offsets from the session cache. */
-async function sourcePage(read: Read, source: string, fetch: () => Promise<unknown>) {
+async function sourcePage(read: Read, product: string, fetch: () => Promise<unknown>) {
   const { host, resource, offset, sessionId } = read
   const body = offset === 0 ? JSON.stringify(await fetch()) : host.pages.get(`${sessionId}:${resource}`)
-  if (body === undefined) throw new Error(`Read this ${source === 'feishu' ? 'Feishu' : 'GitHub'} resource from offset 0 first`)
+  if (body === undefined) throw new Error(`Read this ${product} resource from offset 0 first`)
   if (offset === 0) host.pages.set(`${sessionId}:${resource}`, body)
   return text(read, body)
 }
@@ -205,9 +205,8 @@ const ROUTES: readonly Route[] = [
     const ref = feishuRef(source)
     if (!ref) throw new Error('A Feishu source trigger is required')
     const commands = read.host.commands.withSignal(read.signal)
-    return sourcePage(read, 'feishu', () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()))
+    return sourcePage(read, 'Feishu', () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()))
   }],
-  ['github/', read => sourcePage(read, 'github', () => readForge(forgeClient(read.host.commands, 'github').withSignal(read.signal), read.resource, 'github'))],
   ['trigger/', async read => {
     const { host, rest, ticketId, offset, signal } = read
     if (!rest || rest.includes('/')) throw new Error('Unknown context resource')
@@ -293,6 +292,17 @@ const ROUTES: readonly Route[] = [
   }],
 ]
 
+/** The route of a resource of a resolved forge Source instance, which starts with the instance's id, such as `github/issues/12`. */
+function forgeRoute(host: ResourceHost, name: string): Route | undefined {
+  const id = name.slice(0, Math.max(0, name.indexOf('/')))
+  let forges: Record<string, unknown>
+  try { forges = host.commands.deployment.forges } catch { return undefined /* Setup still waits; no forge resolved. */ }
+  if (!id || !(id in forges)) return undefined
+  return [`${id}/`, read => {
+    const client = forgeClient(read.host.commands, id).withSignal(read.signal)
+    return sourcePage(read, client.conventions.product, () => readForge(client, read.resource, id))
+  }]
+}
 /**
  * Read a paginated resource for the main Session or a ticket's worker Session.
  * Legacy prefixes (`event/`, `task/`, `observation/`) remain accepted so references in older Session history stay readable.
@@ -300,7 +310,7 @@ const ROUTES: readonly Route[] = [
 export async function readResource(host: ResourceHost, resource: string, offset: number, limit: number | undefined, ticketId?: string,
   signal?: AbortSignal) {
   const name = resource.replace(/^event\//, 'trigger/').replace(/^task\//, 'ticket/').replace(/^observation\//, 'decision/')
-  const route = ROUTES.find(([route]) => route.endsWith('/') ? name.startsWith(route) : name === route)
+  const route = ROUTES.find(([route]) => route.endsWith('/') ? name.startsWith(route) : name === route) ?? forgeRoute(host, name)
   if (!route) throw new Error('Unknown context resource')
   const sessionId = ticketId ? workerSessionId(ticketId) : host.masterId
   const rest = route[0].endsWith('/') ? name.slice(route[0].length) : ''
