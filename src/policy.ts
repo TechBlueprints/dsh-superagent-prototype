@@ -128,6 +128,12 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
   const bots = z.array(AllowedSchema).catch([]).parse(settings.policy.sources[actor.source]?.bots ?? [])
   return bots.find(entry => sameName(entry.id, actor.id))
 }
+/**
+ * Who sent a Trigger as the router reads it: the Source instance, the sender's account there, whether that account is on
+ * the Source's `allowed` list, and whether the Source counts the sender as a person.
+ */
+export const senderOf = (settings: Settings, trigger: Pick<Trigger, 'source' | 'actor' | 'human'>) =>
+  ({ source: trigger.source, id: trigger.actor.id, listed: !!allowedSender(settings, trigger.actor), human: trigger.human })
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
 

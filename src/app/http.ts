@@ -13,6 +13,8 @@ import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
+import type { Commands } from '../infra/commands.ts'
+import type { ReceiveResult, Trigger } from '../core/index.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
@@ -25,11 +27,16 @@ import { policyHistory } from './settings-history.ts'
 import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
+import { OperatorRequestSchema, operatorTrigger } from './operator.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
 export interface HttpHost {
   readonly store: Store
+  /** Account CLIs and forge clients' commands, which an operator request reads its Issue through. */
+  readonly commands: Commands
+  /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
+  receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
@@ -188,6 +195,14 @@ function routes(runtime: HttpHost): Routes {
     'POST threads/:key/unsubscribe': async ({ params }) => {
       const removed = runtime.engine.unsubscribe(params.key)
       return { removed, thread: params.key, context_delivery: await runtime.sessions.delivery(`subscription:${params.key}`) }
+    },
+    'POST triggers': async ({ body }) => {
+      if (!runtime.configured()) throw new RouteError(400, 'dsh-superagent is waiting for setup')
+      const request = OperatorRequestSchema.parse(await body())
+      // A Source that cannot take the request, or an Issue that cannot be read, refuses it.
+      return operatorTrigger({ deployment: runtime.deployment, commands: runtime.commands, sources: runtime.sources,
+        settings: () => store.settings(), receive: trigger => runtime.receive(trigger) }, request)
+        .catch((error: unknown) => { throw new RouteError(400, error instanceof Error ? error.message : String(error)) })
     },
     'POST triggers/:id/requeue': ({ params }) => {
       const queued = runtime.engine.reevaluate(params.id)

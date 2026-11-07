@@ -339,6 +339,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
+| `src/app/operator.ts` | Operator requests (`POST triggers`): a person's request the operator sends on a forge Source, optionally on one of its Issues or pull requests |
 | `src/app/forge-of.ts` | `forgeOf`: the forge repository a Ticket works on, which its environment, PR claims and resources name |
 | `src/app/source-context.ts` | `sourceContextOf`: each Source instance's `SourceContext` |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |

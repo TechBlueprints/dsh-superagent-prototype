@@ -374,8 +374,8 @@ export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, roun
   }, thread => round.read.has(thread.ref.id))
 }
 async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Promise<void> {
-  // The default branch's CI Thread has no Issue or PR to read; its CI arrives as Triggers.
-  if (thread.ref.id.startsWith('ci:')) return
+  // The default branch's CI Thread has no Issue or PR to read; its CI arrives as Triggers. An operator request's own Thread has none either.
+  if (thread.ref.id.startsWith('ci:') || thread.ref.id.startsWith('operator:')) return
   const parsed = parseThreadId(thread.ref.id)
   const product = forgeClient(ctx.commands, ctx.instance).conventions.product
   if (!parsed) throw new Error(`Subscribed thread has no ${product} issue or PR number`)

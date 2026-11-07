@@ -344,6 +344,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
     return { paused: body.paused }
   } },
+  'POST triggers': { body: true, answer: () => refuse(400, 'Operator requests are not served by the panel fixture') },
   'DELETE settings/:block': { body: true, answer: ({ params: { block } }) => refuse(400, `${block} is a kind's own instance`) },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined

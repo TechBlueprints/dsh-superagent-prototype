@@ -9,6 +9,7 @@ import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import { admissionContext } from '../sources/admission-context.ts'
 import { readRepositoryPath } from '../sources/forge-read.ts'
+import { senderOf } from '../policy.ts'
 import { forgeClient } from '../sources/forge.ts'
 import { forgeOfKind } from '../deployment.ts'
 import type { TriggerContext } from '../sources/kind.ts'
@@ -208,7 +209,7 @@ export class MasterAssessor implements Assessor {
     })() : { error: error ?? 'Call orchestrator_eval to load initial context', complete: false }
     const settings = this.host.settings()
     const others = candidate.triggers.filter(item => item.id !== trigger.id)
-    return { trigger_id: trigger.id, strength: candidate.strength, mode: settings.eval.mode,
+    return { trigger_id: trigger.id, strength: candidate.strength, sender: senderOf(settings, trigger), mode: settings.eval.mode,
       source: { kind: trigger.source, actor: trigger.actor.id, thread: threadKey(trigger.threads[0]!), ...(trigger.url
         ? { url: trigger.url } : {}) },
       ...cut(trigger.text, TRIGGER_CHARS), ...imageIds(source?.messageId ?? '', trigger.text),
