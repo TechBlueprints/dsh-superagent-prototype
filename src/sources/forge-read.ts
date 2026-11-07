@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { ThreadFact } from '../core/index.ts'
 import { validItems } from '../infra/commands.ts'
 import type { CiSnapshot, ForgeClient } from './forge-client.ts'
-import { forgeClient } from './forge.ts'
+import { forgeClient, humanOf } from './forge.ts'
 import { CommentSchema, IssueSchema, reviewPlace, type ForgeComment } from './forge-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
 
@@ -51,10 +51,10 @@ export async function readRepositoryPath(client: ForgeClient, path: string, kind
 export const pullChecks = (client: ForgeClient, head: string, tally?: { skipped: number }): Promise<CiSnapshot> => client.checks(head, tally)
 
 /** Formats a forge comment, review, or issue as a model-facing ContextMessage, marking bots and apps because bot messages never authorize work. */
-function forgeMessage(client: ForgeClient, item: ForgeComment, text: string, id: string): ContextMessage {
+function forgeMessage(client: ForgeClient, item: ForgeComment, text: string, id: string, config?: Record<string, unknown>): ContextMessage {
   const line = item.line ?? item.original_line
   return { id, from: item.user.login, at: item.created_at ?? item.submitted_at ?? '', text,
-    ...!client.conventions.isHuman(item.user) ? { bot: true } : {}, ...item.html_url ? { url: item.html_url } : {},
+    ...!humanOf(client.conventions, config)(item.user) ? { bot: true } : {}, ...item.html_url ? { url: item.html_url } : {},
     ...item.path ? { path: item.path, ...line != null ? { line } : {} } : {} }
 }
 const reviewText = (review: ForgeComment): string =>
@@ -63,11 +63,11 @@ const DescriptionSchema = IssueSchema.extend({
   labels: z.array(z.looseObject({ name: z.string() })).nullish(), draft: z.boolean().nullish(), merged: z.boolean().nullish(),
   head: z.looseObject({ ref: z.string() }).nullish(), base: z.looseObject({ ref: z.string() }).nullish(),
 })
-function threadMessages(client: ForgeClient, thread: ForgeComment[], id: (comment: ForgeComment) => string): ContextMessage[] {
+function threadMessages(client: ForgeClient, thread: ForgeComment[], id: (comment: ForgeComment) => string, config?: Record<string, unknown>): ContextMessage[] {
   const [first] = thread
   return thread.map(item => item === first
-    ? forgeMessage(client, item, [reviewPlace(item), item.body ?? ''].filter(Boolean).join('\n\n'), id(item))
-    : { ...forgeMessage(client, item, item.body ?? '', id(item)), ...first ? { reply_to: id(first) } : {} })
+    ? forgeMessage(client, item, [reviewPlace(item), item.body ?? ''].filter(Boolean).join('\n\n'), id(item), config)
+    : { ...forgeMessage(client, item, item.body ?? '', id(item), config), ...first ? { reply_to: id(first) } : {} })
 }
 
 /**
@@ -118,25 +118,25 @@ export async function readForge(client: ForgeClient, resource: string, prefix = 
     ...listed.more ? { next_resource: `${prefix}/${kind}/${number}/${section}/${Number(page) + 1}` } : {} }
 }
 /** Reads one page of an Issue or PR conversation (with the Issue/PR description first on page 1), using comment URLs as message IDs. */
-async function conversationPage(client: ForgeClient, number: number, page: number) {
+async function conversationPage(client: ForgeClient, number: number, page: number, config?: Record<string, unknown>) {
   const messages: ContextMessage[] = []
   if (page === 1) {
     const issue = await client.issue(number)
-    messages.push(forgeMessage(client, issue, `${issue.title}\n\n${issue.body ?? ''}`, issue.html_url))
+    messages.push(forgeMessage(client, issue, `${issue.title}\n\n${issue.body ?? ''}`, issue.html_url, config))
   }
   const listed = await client.commentPage(number, 'comments', page, 100, false)
   const tally = { skipped: 0 }
   const comments = validItems(CommentSchema, listed.items, tally)
-  messages.push(...comments.map(comment => forgeMessage(client, comment, comment.body ?? '', comment.html_url ?? String(comment.id))))
+  messages.push(...comments.map(comment => forgeMessage(client, comment, comment.body ?? '', comment.html_url ?? String(comment.id), config)))
   return { messages, next_resource: listed.more ? String(page + 1) : null, ...tally.skipped ? { skipped: tally.skipped } : {} }
 }
 /**
  * Context reader for a forge Trigger: reads the review thread for an inline review comment (whose first comment is its
  * root and parent), or the Issue/PR conversation by page otherwise (whose first page is its root and parent).
  */
-export const forgeThreadContext: ThreadContext<unknown> = {
+export const forgeThreadContext: ThreadContext<Record<string, unknown>> = {
   messageId: trigger => trigger.url ?? '',
-  read: async (commands, trigger, part, cursor) => {
+  read: async (commands, trigger, part, cursor, config) => {
     // The default branch's CI has no conversation; its Trigger is its context.
     if (typeof trigger.meta.branch === 'string') {
       const message = { id: trigger.url ?? trigger.id, from: 'CI', at: trigger.at, text: trigger.text, bot: true as const }
@@ -146,11 +146,11 @@ export const forgeThreadContext: ThreadContext<unknown> = {
     const number = Number(trigger.meta.number)
     if (trigger.meta.kind === 'inline' && typeof trigger.meta.commentId === 'number') {
       const thread = await client.reviewThread(number, trigger.meta.commentId)
-      const messages = threadMessages(client, thread, item => item.html_url ?? String(item.id))
+      const messages = threadMessages(client, thread, item => item.html_url ?? String(item.id), config)
       const read = part === 'thread' ? messages : messages.slice(0, 1)
       return { messages: read, body: { status: 'review_thread', messages: read }, status: 'review_thread' }
     }
-    const body = await conversationPage(client, number, Number(cursor ?? '1'))
+    const body = await conversationPage(client, number, Number(cursor ?? '1'), config)
     return { messages: body.messages, next: body.next_resource ?? undefined, body }
   },
 }

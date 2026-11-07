@@ -113,6 +113,25 @@ it('gives each forge host its account\'s credential helper and fetches its SSH r
   expect(agentVariables(dir)).toMatchObject({ GH_HOST: undefined, GH_REPO: undefined, GH_ENTERPRISE_TOKEN: undefined, GITEA_TOKEN: undefined })
 })
 
+it('runs a Gitea account\'s tea as tea, and answers git for its host with the token file through a credential shim', async () => {
+  const tea = program(join(dir, 'tea-agent'), 'echo tea "$@"')
+  const token = join(dir, 'token')
+  writeFileSync(token, 'gitea-token\n', { mode: 0o600 })
+  const gitea = testForge({ id: 'gitea', kind: 'gitea', host: 'git.example.com', repository: 'home/app', web: 'https://git.example.com',
+    api: 'https://git.example.com/api/v1', login: 'ziggy', cli: tea, shim: 'tea', credential: { helper: 'token-file', path: token } })
+  await writeEnvironment(testDeployment({ stateDir: dir, forges: { github: testForge(), gitea }, feishu: undefined }), [])
+  const bin = workerBin(dir)
+  expect(readdirSync(bin).sort()).toEqual(['dsh-superagent-credential-gitea', 'gh', 'lark-cli', 'tea'])
+  expect((await exec(join(bin, 'tea'), ['pr', 'list'])).stdout).toBe('tea pr list\n')
+  const env = workerEnv({ PATH: process.env.PATH, HOME: dir, ...agentVariables(dir) })
+  await exec('git', ['init', '-q', 'repo'], { cwd: dir, env })
+  const fill = exec('git', ['-C', 'repo', 'credential', 'fill'], { cwd: dir, env, timeout: 10_000 })
+  fill.child.stdin?.end('protocol=https\nhost=git.example.com\n\n')
+  expect((await fill).stdout).toBe('protocol=https\nhost=git.example.com\nusername=ziggy\npassword=gitea-token\n')
+  // The shim answers only a credential request.
+  expect((await exec(join(bin, 'dsh-superagent-credential-gitea'), ['store'])).stdout).toBe('')
+})
+
 it('fails instead of asking the operator\'s askpass helpers when the agent\'s credential helper has no answer', async () => {
   const log = join(dir, 'asked')
   const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)

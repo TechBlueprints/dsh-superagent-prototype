@@ -4,7 +4,7 @@ import { key, type Thread } from '../core/index.ts'
 import { sameName } from '../infra/text.ts'
 import { validItems, type Tally } from '../infra/commands.ts'
 import { forgeStatus, type ForgeClient, type StreamId } from './forge-client.ts'
-import { forgeClient } from './forge.ts'
+import { forgeClient, humanOf } from './forge.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary } from './forge-read.ts'
 import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, issueTrigger, IssueSchema, pullTrigger, type Origin, type PullRef }
   from './forge-trigger.ts'
@@ -123,7 +123,7 @@ async function readStream(ctx: SourceContext, round: Round, id: StreamId, config
   if (page === undefined) { ctx.state.set(name, { since, started }); return }
   const items = validItems(ListedSchema, page.items, round.tally)
   const { login } = forge.account
-  const origin = originOf(ctx), human = forge.conventions.isHuman
+  const origin = originOf(ctx), human = humanOf(forge.conventions, configOf(ctx))
   const fresh = (at: string | null | undefined, kind: string) =>
     kind in started && Date.parse(at ?? '') >= Math.max(Date.parse(started[kind]!), horizon)
   for (const item of items) {
@@ -243,7 +243,7 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
 async function readNotified(ctx: SourceContext, round: Round, number: number, item: Retry): Promise<void> {
   const { since } = item
   const forge = client(ctx, round.signal)
-  const origin = originOf(ctx), human = forge.conventions.isHuman
+  const origin = originOf(ctx), human = humanOf(forge.conventions, configOf(ctx))
   const { login } = forge.account
   let isPr = item.pr
   if (!isPr) {
@@ -284,7 +284,7 @@ function pull(ctx: SourceContext, round: Round, number: number): Promise<Pull> {
 async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, round: Round): Promise<void> {
   const forge = client(ctx, round.signal)
   const { login } = forge.account
-  const origin = originOf(ctx), human = forge.conventions.isHuman
+  const origin = originOf(ctx), human = humanOf(forge.conventions, configOf(ctx))
   const kinds = ref.isPr ? ['conversation', 'inline', 'review'] as const : ['conversation'] as const
   for (const kind of kinds) {
     const comments = await forge.comments(ref.number, kind, since, round.tally)

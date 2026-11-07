@@ -21,8 +21,11 @@ export const workerGitConfig = (stateDir: string): string => join(stateDir, 'wor
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
 export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
-/** The git credential helper of a forge account: its gh's own. */
-export const forgeHelper = (account: ForgeAccount): string => credentialHelper(account.cli)
+/** The worker shim that answers git for a token-file forge account: `username=<login>` and the token file's token as the password. */
+export const credentialShim = (account: Pick<ForgeAccount, 'id'>): string => `dsh-superagent-credential-${account.id}`
+/** The git credential helper of a forge account (`stateDir` locates the worker shims): its gh's own, or its credential shim. */
+export const forgeHelper = (account: ForgeAccount, stateDir: string): string => account.credential.helper === 'gh' ? credentialHelper(account.cli)
+  : `!${shellQuote(join(workerBin(stateDir), credentialShim(account)))}`
 /** One forge account per host, the first by instance id, whose helper answers git for that host. */
 export function hostAccounts(forges: Readonly<Record<string, ForgeAccount>>): ForgeAccount[] {
   const hosts = new Map<string, ForgeAccount>()
@@ -107,8 +110,15 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n')
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  const github = forgeOfKind({ forges }, 'github')
+  const github = forgeOfKind({ forges }, 'github'), gitea = forgeOfKind({ forges }, 'gitea')
   await shim('gh', github ? run(github.cli) : fail('gh is unavailable: this installation has no GitHub Source.'))
+  if (gitea) await shim('tea', run(gitea.cli))
+  // A token-file account's helper prints its login and the token file's first line when git asks for a credential, and nothing else.
+  for (const account of Object.values(forges)) {
+    if (account.credential.helper !== 'token-file') continue
+    await shim(credentialShim(account), ['[ "$1" = get ] || exit 0', `printf 'username=%s\\n' ${shellQuote(account.login)}`,
+      `token=$(head -n 1 ${shellQuote(account.credential.path)}) || exit 1`, `printf 'password=%s\\n' "$token"`].join('\n'))
+  }
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   const accounts = hostAccounts(forges)
   const use = accounts.map(account => `${account.shim}, which acts as ${account.login}${accounts.length > 1 ? ` on ${account.host}` : ''}`).join('; ')
@@ -118,7 +128,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
   // Each forge host gets its account's credential helper, and its SSH remotes are fetched over HTTPS through it.
   const hosts = accounts.flatMap(account => [
-    `[credential "https://${account.host}"]`, `\thelper = ${gitQuote(forgeHelper(account))}`,
+    `[credential "https://${account.host}"]`, `\thelper = ${gitQuote(forgeHelper(account, stateDir))}`,
     `[url "https://${account.host}/"]`, `\tinsteadOf = git@${account.host.replace(/:\d+$/, '')}:`, `\tinsteadOf = ssh://git@${account.host.replace(/:\d+$/, '')}/`,
   ])
   await own(workerGitConfig(stateDir), [
@@ -158,7 +168,7 @@ export async function verifyEnvironment(deployment: Pick<Deployment, 'forges' | 
     // `-z` separates fields with NUL and never quotes paths.
     const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', `credential.https://${account.host}.helper`], stateDir,
       AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
-    if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, forgeHelper(account), ''].join('\0')) throw new SetupError('gitTooOld')
+    if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, forgeHelper(account, stateDir), ''].join('\0')) throw new SetupError('gitTooOld')
   }
 }
 

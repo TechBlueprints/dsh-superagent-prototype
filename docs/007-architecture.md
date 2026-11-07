@@ -372,6 +372,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/forge-read.ts` | CI snapshots, repository reads, an instance's `<id>/` resources, and `forgeThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/github.ts` | The GitHub kind (github.com or a GitHub Enterprise Server) and plugin entry, exported as `./github-watch` |
 | `src/sources/github-client.ts` | `GithubClient`: the `ForgeClient` of a GitHub instance, the agent's gh restricted to its repository (`--hostname` for a GitHub Enterprise Server), and GitHub's URL conventions |
+| `src/sources/gitea.ts` | The Gitea kind and plugin entry, exported as `./gitea-watch` |
+| `src/sources/gitea-client.ts` | `GiteaClient`: the `ForgeClient` of a Gitea instance over fetch with its token file, paging, review-thread roots, statuses as CI and the 404 rule, and Gitea's URL conventions |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -415,6 +417,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/forge-of.spec.ts` | Which forge repository a Ticket works on, its forge variables, and the session marker that starts each Session's system prompt |
+| `tests/gitea.spec.ts` | The Gitea Source against a stubbed Gitea API: paging, normalization, threads, CI, the 404 rule, the Channel, a poll round and setup |
 | `tests/github-client.spec.ts` | `GithubClient`'s gh calls for github.com and a GitHub Enterprise Server host, inside one repository |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

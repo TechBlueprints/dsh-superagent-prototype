@@ -104,7 +104,7 @@ export class Runtime extends Service implements SourceHost {
       const skills = () => {
         const forges = setup.configured() ? Object.values(setup.deployment.forges) : []
         return { feishu: setup.configured() && !!setup.deployment.feishu,
-          github: forges.some(forge => forge.kind === 'github') || !forges.length }
+          github: forges.some(forge => forge.kind === 'github') || !forges.length, gitea: forges.some(forge => forge.kind === 'gitea') }
       }
       const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, skills)
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`

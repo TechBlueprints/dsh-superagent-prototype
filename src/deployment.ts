@@ -1,12 +1,13 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
+import { sameName } from './infra/text.ts'
 import { SetupError, type SetupCode, type SetupProblem } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -49,9 +50,16 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
+/** A Gitea Source's accounts: the host, the repository, the agent's API token in a file only its owner reads, and its tea CLI. */
+export const GiteaAccountsSchema = z.object({
+  host: z.string().trim().toLowerCase().regex(/^([a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?)?$/, 'a host name such as git.example.com').default(''),
+  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  tokenFile: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'an absolute path').default(''),
+  cli: z.string().trim().default(''),
+})
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** The part of each Source kind's configuration that deployment setup reads, by Source kind. */
-const SETUP_SCHEMAS = { github: GithubAccountsSchema, feishu: FeishuBotSchema } as const
+const SETUP_SCHEMAS = { github: GithubAccountsSchema, gitea: GiteaAccountsSchema, feishu: FeishuBotSchema } as const
 /** Source configuration keys, by Source kind, that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(Object.entries(SETUP_SCHEMAS)
   .map(([kind, schema]) => [kind, Object.keys(schema.shape)]))
@@ -62,7 +70,7 @@ export function setupValues(kind: string, config: unknown): Record<string, unkno
   return parsed?.success ? parsed.data : (config ?? {}) as Record<string, unknown>
 }
 /** Source kinds whose instances are forges: each enabled instance resolves to a `ForgeAccount`. */
-export const FORGE_KINDS = ['github'] as const
+export const FORGE_KINDS = ['github', 'gitea'] as const
 export type ForgeKind = typeof FORGE_KINDS[number]
 
 /**
@@ -84,8 +92,10 @@ export interface ForgeAccount {
   commitEmail: string
   /** The resolved executable of the agent's CLI on this forge. */
   cli: string
-  shim: 'gh'
-  credential: { helper: 'gh' }
+  /** The name workers run that CLI by: gh for GitHub, tea for Gitea. */
+  shim: 'gh' | 'tea'
+  /** How git gets the account's credential: gh's own helper, or the token file through a dsh-superagent credential shim. */
+  credential: { helper: 'gh' } | { helper: 'token-file'; path: string }
 }
 export interface Deployment extends Machine {
   /** The resolved forge Source instances, by instance id. */
@@ -166,24 +176,89 @@ export function forgeInstances(settings: { sources: Record<string, { enabled: bo
   const kinds = new Set<string>(FORGE_KINDS)
   const stored = Object.entries(settings.sources).flatMap(([id, value]) => kinds.has(value.kind ?? id)
     ? [{ id, kind: (value.kind ?? id) as ForgeKind, config: value.config, enabled: value.enabled }] : [])
-  const own = FORGE_KINDS.filter(kind => !settings.sources[kind]).map(kind => ({ id: kind, kind, config: {}, enabled: true }))
+  // The GitHub Source's own instance exists unstored, as it always has; another forge's instances exist once saved.
+  const own = (['github'] as const).filter(kind => !settings.sources[kind]).map(kind => ({ id: kind, kind, config: {}, enabled: true }))
   const all = [...own, ...stored].sort((a, b) => a.id.localeCompare(b.id))
   const enabled = all.filter(instance => instance.enabled)
   return (enabled.length ? enabled : all.filter(instance => instance.id === instance.kind)).map(({ id, kind, config }) => ({ id, kind, config }))
 }
+/** Reads a Gitea API token file: a regular file that only its owner may read, holding the token on its first line. */
+export function readTokenFile(file: string): string {
+  const stat = statSync(file)
+  if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error(`${file} must be a regular file of mode 0600 or stricter`)
+  const token = readFileSync(file, 'utf8').split('\n')[0]!.trim()
+  if (!token) throw new Error(`${file} holds no token`)
+  return token
+}
+/** The HTTP client setup uses for Gitea; tests replace `fetch`. */
+export type Http = (url: string, init: { headers: Record<string, string>; signal?: AbortSignal }) => Promise<Pick<Response, 'ok' | 'status' | 'json'>>
+const GiteaUser = z.looseObject({ login: z.string().regex(/^[A-Za-z0-9_.-]+$/), id: z.number().int(), email: z.string().nullish() })
+const GiteaRepository = z.looseObject({ full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  permissions: z.looseObject({ push: z.boolean().nullish() }).nullish() })
+const TeaLogins = z.array(z.looseObject({ url: z.string().optional(), user: z.string().optional() }))
+/** The Gitea web and API addresses of `host`. */
+export function giteaAddresses(host: string, repository: string): Pick<ForgeAccount, 'web' | 'api' | 'cloneUrl'> {
+  const web = `https://${host}`
+  return { web, api: `${web}/api/v1`, cloneUrl: `${web}/${repository}.git` }
+}
+/**
+ * Verify a Gitea Source instance: the token in its token file reads the agent's account and can push to the repository, and
+ * its tea CLI is signed in to the same account on the same host, which workers act through.
+ * @throws SetupError placed on instance `id`.
+ */
+export async function resolveGitea(machine: Machine, gitea: unknown, probe: Probe, path = process.env.PATH ?? '', id = 'gitea',
+  http: Http = (url, init) => fetch(url, init)): Promise<ForgeAccount> {
+  const values = { forge: 'Gitea' }
+  const fail = (code: SetupCode, more: Record<string, string> = {}): never => { throw new SetupError(code, { ...values, ...more }, id) }
+  const accounts = GiteaAccountsSchema.parse(gitea ?? {})
+  const { host, repository: remote, tokenFile } = accounts
+  if (!host) fail('hostUnset')
+  if (!remote) fail('repositoryUnset')
+  if (!tokenFile) fail('tokenFileUnset')
+  if (!accounts.cli) fail('agentCliUnset')
+  let cli = ''
+  try { cli = executable(accounts.cli, path, workerBin(machine.stateDir)) } catch (error) { fail('agentCliMissing', { output: reason(error) }) }
+  let token = ''
+  try { token = readTokenFile(tokenFile) } catch (error) { fail('tokenFileUnreadable', { file: tokenFile, output: reason(error) }) }
+  const { api } = giteaAddresses(host, remote)
+  const get = async (resource: string) => {
+    const response = await http(`${api}/${resource}`, { headers: { authorization: `token ${token}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(60_000) })
+    return { status: response.status, body: response.ok ? await response.json() as unknown : undefined }
+  }
+  const user = await get('user').catch((error: unknown) => fail('tokenRejected', { host, file: tokenFile, output: reason(error) }))
+  if (user.status === 401 || user.status === 403) fail('tokenRejected', { host, file: tokenFile })
+  const agent = GiteaUser.safeParse(user.body).data ?? fail('agentCliNoAccount')
+  const access = await get(`repos/${remote}`).catch((error: unknown) => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }))
+  if (!access.body) fail('repositoryUnreadable', { account: agent.login, repository: remote, output: `HTTP ${access.status}` })
+  const repo = GiteaRepository.safeParse(access.body).data ?? fail('repositoryUnreported', { repository: remote })
+  const repository = repo.full_name
+  if (repo.permissions?.push !== true) fail('repositoryReadOnly', { account: agent.login, repository })
+  // Workers act through tea, which must be signed in to the same account on this host.
+  const listed = await probe([cli, 'logins', 'list', '--output', 'json']).catch((error: unknown) => fail('agentCliSignedOut', { output: reason(error) }))
+  const logins = parsed(TeaLogins, listed) ?? fail('agentCliNoAccount')
+  const login = logins.find(item => item.url && sameName(new URL(item.url).host, host))
+  if (!login?.user) fail('agentCliSignedOut', { output: `tea has no login for ${host}` })
+  if (!sameName(login!.user!, agent.login)) fail('cliAccountDiffers', { login: login!.user!, account: agent.login })
+  // Gitea shows the account's own email to itself; without one, a noreply address on the host.
+  const email = agent.email ? agent.email : `${agent.login}@noreply.${host}`
+  return { id, kind: 'gitea', host, repository, ...giteaAddresses(host, repository), login: agent.login, commitEmail: email,
+    cli, shim: 'tea', credential: { helper: 'token-file', path: tokenFile } }
+}
 /** Resolves one forge Source instance by its kind. */
-export async function resolveForge(machine: Machine, instance: ForgeInstance, probe: Probe, path = process.env.PATH ?? ''): Promise<ForgeAccount> {
-  return resolveGithub(machine, instance.config, probe, path, instance.id)
+export async function resolveForge(machine: Machine, instance: ForgeInstance, probe: Probe, path = process.env.PATH ?? '', http?: Http): Promise<ForgeAccount> {
+  return instance.kind === 'gitea' ? resolveGitea(machine, instance.config, probe, path, instance.id, http)
+    : resolveGithub(machine, instance.config, probe, path, instance.id)
 }
 /**
  * Resolves each forge Source instance, collecting each failed one's problem by instance id, and refuses two instances of a kind
  * that name different agent CLIs, since workers run one CLI per kind.
  */
-export async function resolveForges(machine: Machine, instances: readonly ForgeInstance[], probe: Probe, path = process.env.PATH ?? ''):
-  Promise<{ forges: Record<string, ForgeAccount>; problems: Record<string, SetupProblem> }> {
+export async function resolveForges(machine: Machine, instances: readonly ForgeInstance[], probe: Probe, path = process.env.PATH ?? '',
+  http?: Http): Promise<{ forges: Record<string, ForgeAccount>; problems: Record<string, SetupProblem> }> {
   const forges: Record<string, ForgeAccount> = {}, problems: Record<string, SetupProblem> = {}
   for (const instance of instances) {
-    try { forges[instance.id] = await resolveForge(machine, instance, probe, path) }
+    try { forges[instance.id] = await resolveForge(machine, instance, probe, path, http) }
     catch (error) { if (!(error instanceof SetupError)) throw error; problems[instance.id] = error.problem }
   }
   for (const kind of FORGE_KINDS) {

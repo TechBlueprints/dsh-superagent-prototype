@@ -10,12 +10,14 @@ import type { Commands } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import type { ForgeClient, ForgeConventions } from './forge-client.ts'
 import { GithubClient, githubConventions } from './github-client.ts'
+import { GiteaClient, giteaConventions } from './gitea-client.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
 import type { FieldSpec, Localized, SourceKind, SourcePolicyPart, VariableSpec, EnvironmentInput } from './kind.ts'
 
 /** The forge kinds' clients, by kind. */
 const CLIENTS: Record<ForgeKind, { client(commands: Commands, account: ForgeAccount): ForgeClient; conventions(account: ForgeAccount): ForgeConventions }> = {
   github: { client: (commands, account) => new GithubClient(commands, account), conventions: githubConventions },
+  gitea: { client: (commands, account) => new GiteaClient(commands, account), conventions: giteaConventions },
 }
 /** The client of forge Source instance `instance`, whose account setup resolved. */
 export function forgeClient(commands: Commands, instance: string): ForgeClient {
@@ -34,6 +36,14 @@ const ObservedSchema = z.looseObject({ observeIssues: z.boolean().optional(), ob
 export interface ForgeConfig extends Record<string, unknown> {
   repository: string; pollSeconds: number; failuresBeforeError: number
   observeIssues: boolean; observePulls: boolean; observeComments: boolean; observeCi: boolean
+  /** Accounts the instance counts as automated, for a forge that marks none (Gitea). */
+  automatedAccounts?: { id: string }[]
+}
+/** Who counts as a person on an instance: whom its forge reports as one, unless the instance names the account as automated. */
+export function humanOf(conventions: Pick<ForgeConventions, 'isHuman'>, config?: Record<string, unknown>) {
+  const listed = Array.isArray(config?.automatedAccounts) ? config.automatedAccounts as { id?: unknown }[] : []
+  const automated = new Set(listed.map(item => String(item.id ?? '').toLowerCase()))
+  return (user: { login: string; type?: string | undefined }): boolean => conventions.isHuman(user) && !automated.has(user.login.toLowerCase())
 }
 function rowOf(meta: Record<string, unknown>): Row | undefined {
   if (meta.ci === true) return typeof meta.branch === 'string' ? 'ci' : undefined

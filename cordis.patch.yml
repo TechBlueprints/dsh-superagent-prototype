@@ -6,6 +6,10 @@
       name: dsh-superagent
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
+    # Optional Gitea Source; its instances name a host, a repository, a token file and a tea CLI.
+    - id: dsh-superagent-gitea
+      name: dsh-superagent/gitea-watch
+      disabled: true
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

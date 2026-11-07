@@ -64,6 +64,8 @@ export class Commands {
    */
   constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal) {}
   get deployment(): Deployment { return this.resolved() }
+  /** Aborted when dsh-superagent stops or a caller's signal (`withSignal`) aborts; HTTP clients stop their requests with it. */
+  get lifetime(): AbortSignal { return this.signal }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
