@@ -37,6 +37,10 @@ A stopped Ticket does not send its stop message to Eval again unless another Tic
 
 A person can send an owned follow-up to Eval from the panel. If the main Session then attaches it back to a live Ticket, the Executor receives it again. The panel also offers re-evaluation when no effective judgement covers the message.
 
+### Follow-ups from listed senders only
+
+A Source's Policy can narrow whose messages are follow-ups: `followUps` is `any` (the default, as above) or `listed`. With `listed`, a message on a Ticket's Thread from a person not on the Source's list does not belong to the Ticket's Executor. It reaches the Ticket for context only, as a message on a context Thread does, does not resume an ended Ticket, and goes to Eval. There the gate judges it by the admission table, not as a follow-up: with **unlisted-addressed** set to inferred candidate, a mention becomes an inferred candidate, which only the main Session's assessment can accept, or the main Session can attach to the Ticket. Messages from listed senders are follow-ups as before. This lets a deployment have every request from someone off the list pass through the main Session, where its model endpoint can ask a person before work starts.
+
 ### Context-only subscriptions
 
 An Executor can follow a related Thread, such as another Issue or pull request, for context. Its messages reach the Ticket but grant no authority or follow-up strength. Human messages there do not resume an ended Ticket unless the main Session attaches a message from that Thread. Notes from the main Session about other work are also context only.
@@ -51,7 +55,7 @@ Human messages that reach no Ticket, including Threads whose Tickets were stoppe
 | inferred | A person not on the list follows up on a Thread with a Ticket, unless their cell of the admission table is explicit; a cell of the admission table set to inferred candidate; a message of a bot on the Source's bot list that addresses the agent or arrives where the Source receives every message |
 | not admitted | Any other bot's message, everything the admission table ignores, and every inferred case while the accept mode is `off` |
 
-For an unlisted person, an explicit admission cell takes precedence even on a Thread with Tickets and works in every accept mode. Otherwise their follow-up is inferred and is not admitted in `off` mode. Messages on Threads followed only for context use the admission table instead of follow-up strength.
+For an unlisted person, an explicit admission cell takes precedence even on a Thread with Tickets and works in every accept mode. Otherwise their follow-up is inferred and is not admitted in `off` mode; with `followUps: listed` it is no follow-up at all, and the admission table decides. Messages on Threads followed only for context use the admission table instead of follow-up strength.
 
 ## Admission
 

@@ -2,7 +2,7 @@
 import type { ChannelRef, OutboundMessage, ScopeResult, SourceScope, Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { HealthBoard, type HealthEntry } from '../infra/health.ts'
-import { AdmissionTableSchema, type Settings } from '../policy.ts'
+import { AdmissionTableSchema, FollowUpsSchema, type Settings } from '../policy.ts'
 import type { ChannelLink, ChannelLinks, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.ts'
 
 type Stored = Settings['sources'][string]
@@ -113,17 +113,20 @@ export class SourceRegistry implements SourceScope {
     const settings = this.settings()
     return Object.fromEntries(Object.entries(parts).map(([id, part]) => {
       const policy = this.kinds.get(kindOf(id, settings))?.policy
-      // `admission` is validated by the Policy's own schema (shared across all kinds), while the kind validates the rest of its part.
-      const { admission, ...rest } = part
-      return [id, policy ? { ...policy.schema.parse(rest), admission: AdmissionTableSchema.parse(admission ?? {}) } : part as Record<string, unknown> & { allowed: { id: string; name?: string }[] }]
+      // `admission` and `followUps` are validated by the Policy's own schema (shared across all kinds), while the kind validates the rest of its part.
+      const { admission, followUps, ...rest } = part
+      return [id, policy ? { ...policy.schema.parse(rest), admission: AdmissionTableSchema.parse(admission ?? {}),
+        ...followUps === undefined ? {} : { followUps: FollowUpsSchema.parse(followUps) } } : part as Record<string, unknown> & { allowed: { id: string; name?: string }[] }]
     }))
   }
   policyPart(id: string, settings = this.settings()) {
     const policy = this.kindFor(id, settings)?.policy
     if (!policy) return undefined
-    const { admission, ...rest } = settings.policy.sources[id] ?? {}
+    const { admission, followUps, ...rest } = settings.policy.sources[id] ?? {}
     const parsed = policy.schema.safeParse(rest)
-    return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {} }
+    const follow = FollowUpsSchema.safeParse(followUps).data
+    return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {},
+      ...follow ? { followUps: follow } : {} }
   }
   channelAllowed(channel: { source: string; address: Record<string, string> }, settings = this.settings()): boolean {
     const kind = this.kindFor(channel.source, settings)
