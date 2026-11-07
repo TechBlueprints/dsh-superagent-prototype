@@ -36,3 +36,13 @@ it('names each Session on the first line of its system prompt, with - for what i
   // A value that would break the line's shape is left out.
   expect(sessionMarker('worker', { id: 'a b]', execution: { name: '', directory: '', assignment: '' } })).toBe('[dsh-superagent session role=worker ticket=- name=-]')
 })
+it('names one repository of a wildcard Source only where a Thread or a Trigger names it', () => {
+  const tb = testForge({ id: 'github-tb', repository: 'TechBlueprints/*' })
+  const forges = { 'github-tb': tb }
+  expect(forgeOf({ follows: [{ thread: 'github-tb:TechBlueprints/widgets#7', own: true }] }, { forges })).toMatchObject({ id: 'github-tb',
+    repository: 'TechBlueprints/widgets', cloneUrl: 'https://github.com/TechBlueprints/widgets.git' })
+  expect(forgeOf({}, { forges }, { source: 'github-tb', meta: { repository: 'TechBlueprints/tools' } })?.repository).toBe('TechBlueprints/tools')
+  // A repository of another owner, or none at all, is no repository of the wildcard.
+  expect(forgeOf({}, { forges }, { source: 'github-tb', meta: { repository: 'Other/tools' } })).toBeUndefined()
+  expect(forgeOf({}, { forges }, { source: 'feishu' })).toBeUndefined()
+})

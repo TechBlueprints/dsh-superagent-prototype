@@ -4,6 +4,8 @@ import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/inde
 import { IM_WORDS } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/forge-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
+import type { ForgeAccount } from '../../deployment.ts'
+import { isWildcard } from '../../sources/forge-client.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
 import { reportRelay, threadFollowedNotice } from '../notices.ts'
@@ -15,15 +17,17 @@ export interface ExecutorToolsHost {
   readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
-  /** The context of the forge Source instance of a ticket's repository (`forgeOf`), whose pull-request rules govern claiming a reported PR; none when the ticket is on no forge. */
-  forge(ticket: Ticket): SourceContext | undefined
+  /**
+   * The ticket's repository (`forgeOf`) and the context of its forge Source instance, whose pull-request rules govern claiming
+   * a reported PR; none when the ticket is on no forge.
+   */
+  forge(ticket: Ticket): { context: SourceContext; account: ForgeAccount } | undefined
   sendReplies(): Promise<void>
 }
 
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
-  const forge = host.forge(ticket)
-  const login = forge?.deployment.forges[forge.instance]?.login
+  const login = host.forge(ticket)?.account.login
   return [
     readTool('Read one page of a resource of this ticket that the resource parameter lists. Follow next_offset, and next_resource where a page names one.',
       true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal)),
@@ -90,10 +94,11 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         // The repository may have become known since the tools were registered, such as by a PR the ticket follows now.
         const repository = args.pr_number != null ? host.forge(current) : undefined
         if (args.pr_number != null && !repository) throw new Error('This ticket is on no forge repository (DSH_SUPERAGENT_REPOSITORY is empty); omit pr_number')
-        const pull = args.pr_number != null && repository ? await readPull(repository, args.pr_number, signal) : undefined
+        const pull = args.pr_number != null && repository ? await readPull(repository.context, args.pr_number, signal,
+          isWildcard(repository.context.deployment.forges[repository.context.instance]?.repository ?? '') ? repository.account.repository : undefined) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
-          const refused = pull && repository && claimPull(repository, ticketId, pull)
+          const refused = pull && repository && claimPull(repository.context, ticketId, pull)
           if (refused) throw new Error(refused)
           const report = { state: args.state, summary: args.summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),

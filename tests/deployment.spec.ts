@@ -72,6 +72,13 @@ describe('setup', () => {
       cloneUrl: 'https://ghe.example.com/corp/app.git', login: 'agent', commitEmail: '9+agent@users.noreply.ghe.example.com', cli: enterprise, shim: 'gh',
       credential: { helper: 'gh' } })
   })
+  it('reads a wildcard\'s owner instead of one repository, whose push access each repository answers when it first notifies', async () => {
+    const org = program(join(dir, 'bin', 'gh-org'), `case "$*" in\n  "api user") echo '{"login":"agent","id":9}' ;;\n  "api users/techblueprints") echo '{"login":"TechBlueprints","type":"Organization"}' ;;\n  *) exit 1 ;;\nesac`)
+    expect(await resolveGithub(machine(), { repository: 'techblueprints/*', cli: org }, probe, path, 'github-tb')).toMatchObject({
+      id: 'github-tb', repository: 'TechBlueprints/*', login: 'agent' })
+    await expect(resolveGithub(machine(), { repository: 'nobody/*', cli: org }, probe, path, 'github-tb')).rejects
+      .toEqual(setupError('github-tb', 'repositoryUnreadable', { repository: 'nobody/*' }))
+  })
   it('resolves each enabled forge instance on its own, and refuses a second GitHub CLI', async () => {
     const settings = { sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
       'github-tools': { enabled: true, kind: 'github', config: { repository: 'acme/tools', cli: 'gh' } },

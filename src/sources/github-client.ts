@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { hostFlag, type ForgeAccount } from '../deployment.ts'
 import { CliError, validItems, type Commands, type Tally } from '../infra/commands.ts'
 import { escapeRegExp, sameName } from '../infra/text.ts'
-import type { CiSnapshot, CommentKind, ForgeClient, ForgeConventions, ForgeNotification, StreamId, StreamPage } from './forge-client.ts'
+import { isWildcard, type CiSnapshot, type CommentKind, type ForgeClient, type ForgeConventions, type ForgeNotification, type StreamId,
+  type StreamPage } from './forge-client.ts'
 import { CommentSchema, IssueSchema, isHumanLogin, type ForgeComment, type ForgeIssue } from './forge-trigger.ts'
 
 const GITHUB_COM = { web: 'https://github.com', api: 'https://api.github.com' }
@@ -57,6 +58,13 @@ export class GithubClient implements ForgeClient {
   readonly conventions: ForgeConventions
   constructor(readonly commands: Commands, readonly account: ForgeAccount) { this.conventions = githubConventions(account) }
   withSignal(signal?: AbortSignal): GithubClient { return signal ? new GithubClient(this.commands.withSignal(signal), this.account) : this }
+  forRepository(repository: string): GithubClient {
+    return sameName(repository, this.account.repository) ? this
+      : new GithubClient(this.commands, { ...this.account, repository, cloneUrl: `${this.account.web}/${repository}.git` })
+  }
+  async canPush(): Promise<boolean> {
+    return (await this.api(z.looseObject({ permissions: z.looseObject({ push: z.boolean().nullish() }).nullish() }), '')).permissions?.push === true
+  }
   /**
    * Calls the GitHub API on a path within the account's repository, validating JSON output when a schema is provided
    * or returning raw CLI output (such as raw files or `--include` headers) when omitted.
@@ -77,11 +85,16 @@ export class GithubClient implements ForgeClient {
   }
   /** The repository's notifications; GitHub asks for its polling interval in `X-Poll-Interval`, which is at least 60 seconds. */
   async notifications(since: string, tally?: Tally): Promise<{ items: ForgeNotification[]; interval: number }> {
+    // A wildcard instance reads the account's notifications, which name every repository; another reads its repository's.
     const path = `notifications?all=true&per_page=50&since=${encodeURIComponent(since)}`
-    const { headers, body } = included(await this.api(path, '--include'))
+    const { headers, body } = included(isWildcard(this.account.repository)
+      ? await this.commands.run(this.account.cli, ['api', path, '--include', ...hostFlag(this.account.host)]) : await this.api(path, '--include'))
     const asked = Number(/x-poll-interval:\s*(\d+)/i.exec(headers)?.[1] ?? 60)
     const interval = Math.max(60, Number.isFinite(asked) ? asked : 60)
-    const listed = /rel="next"/.test(headers) ? await this.pages(NotificationSchema, path, tally)
+    const listed = /rel="next"/.test(headers) ? isWildcard(this.account.repository)
+      ? validItems(NotificationSchema, z.array(z.array(z.unknown())).parse(await this.commands.gh(['api', path, '--paginate', '--slurp',
+        ...hostFlag(this.account.host)], this.account.cli)).flat(), tally)
+      : await this.pages(NotificationSchema, path, tally)
       : validItems(NotificationSchema, z.array(z.unknown()).parse(JSON.parse(body)), tally)
     return { interval, items: listed.map(item => {
       const repository = item.repository.full_name
@@ -159,6 +172,7 @@ export class GithubClient implements ForgeClient {
     const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
     if (outside) throw new Error('GitHub calls are restricted to the configured repository')
     const { repository } = this.account
+    if (isWildcard(repository)) throw new Error('A wildcard GitHub Source reads a repository through its client for that repository')
     return path ? `repos/${repository}/${path}` : `repos/${repository}`
   }
 }

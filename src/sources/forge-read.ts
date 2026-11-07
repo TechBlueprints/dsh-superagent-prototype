@@ -142,7 +142,8 @@ export const forgeThreadContext: ThreadContext<Record<string, unknown>> = {
       const message = { id: trigger.url ?? trigger.id, from: 'CI', at: trigger.at, text: trigger.text, bot: true as const }
       return { messages: [message], body: { status: 'branch_ci', messages: [message] }, status: 'branch_ci' }
     }
-    const client = forgeClient(commands, trigger.source)
+    const instance = forgeClient(commands, trigger.source)
+    const client = typeof trigger.meta.repository === 'string' ? instance.forRepository(trigger.meta.repository) : instance
     const number = Number(trigger.meta.number)
     if (trigger.meta.kind === 'inline' && typeof trigger.meta.commentId === 'number') {
       const thread = await client.reviewThread(number, trigger.meta.commentId)

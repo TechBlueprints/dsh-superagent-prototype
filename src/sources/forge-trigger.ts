@@ -8,14 +8,27 @@ import { escapeRegExp, sameName } from '../infra/text.ts'
  * its forge kind, which prefixes Trigger ids. Ids of a kind's own instance (`source === kind`) are as GitHub's have always
  * been; a further instance's name the instance too, as Issue numbers repeat across repositories.
  */
-export interface Origin { source: string; kind: string }
+export interface Origin {
+  source: string; kind: string
+  /** The repository (owner/name) of a wildcard instance's Trigger, which its Thread ids and Trigger ids name; none on a single-repository instance. */
+  repository?: string
+}
 /** The GitHub Source's own instance. */
 export const GITHUB_ORIGIN: Origin = { source: 'github', kind: 'github' }
-/** The parts a Trigger id of `origin` starts with: its kind's prefix, and the instance unless it is the kind's own. */
-const idParts = (origin: Origin, name: string): string[] => [`${origin.kind}-${name}`, ...origin.source === origin.kind ? [] : [origin.source]]
-/** A forge reply address: an Issue or PR conversation, or a review thread when `url` points at an inline review comment. */
-export const forgeChannel = (source: string, number: number, url?: string): ChannelRef =>
-  ({ source, thread: `${source}:${number}`, address: { number: String(number), ...(url ? { url } : {}) } })
+/** The parts a Trigger id of `origin` starts with: its kind's prefix, the instance unless it is the kind's own, and a wildcard's repository. */
+const idParts = (origin: Origin, name: string): string[] => [`${origin.kind}-${name}`, ...origin.source === origin.kind ? [] : [origin.source],
+  ...origin.repository ? [origin.repository] : []]
+/** The Thread id of Issue or PR `number`: the number, or `<owner/name>#<number>` on a wildcard instance. */
+export const forgeThreadId = (number: number | string, repository?: string): string => repository ? `${repository}#${number}` : String(number)
+/** Parses a forge Thread id into its number and, on a wildcard instance, its repository; undefined for another id (such as `ci:main`). */
+export function parseThreadId(id: string): { number: number; repository?: string } | undefined {
+  const match = /^(?:([^/#\s]+\/[^/#\s]+)#)?([1-9]\d*)$/.exec(id)
+  return match ? { number: Number(match[2]), ...match[1] ? { repository: match[1] } : {} } : undefined
+}
+/** A forge reply address: an Issue or PR conversation, or a review thread when `url` points at an inline review comment; a wildcard's names its repository. */
+export const forgeChannel = (source: string, number: number, url?: string, repository?: string): ChannelRef =>
+  ({ source, thread: `${source}:${forgeThreadId(number, repository)}`,
+    address: { number: String(number), ...(url ? { url } : {}), ...repository ? { repository } : {} } })
 /** GitHub returns a deleted account as `null` and displays it as `ghost`; Gitea answers `Ghost` (id -1). */
 export const UserSchema = z.looseObject({ login: z.string(), type: z.string().optional() }).nullable()
   .transform(user => user ?? { login: 'ghost', type: 'User' })
@@ -72,14 +85,15 @@ export function commentTrigger(comment: ForgeComment, ref: PullRef, kind: 'conve
   origin: Origin = GITHUB_ORIGIN, human: Humans = isHumanLogin): Trigger {
   const at = comment.updated_at ?? comment.submitted_at ?? comment.created_at ?? new Date().toISOString()
   const version = comment.updated_at ?? comment.submitted_at ?? ''
-  const id = key(`${origin.kind}-comment`, comment.html_url ?? `${origin.source}:${ref.number}`, String(comment.id), version)
-  const { source } = origin
-  return { id, source, threads: [{ source, id: String(ref.number) }], ...author(origin, comment.user, agent, human), at,
+  const { source, repository } = origin
+  const thread = forgeThreadId(ref.number, repository)
+  const id = key(`${origin.kind}-comment`, comment.html_url ?? `${source}:${thread}`, String(comment.id), version)
+  return { id, source, threads: [{ source, id: thread }], ...author(origin, comment.user, agent, human), at,
     text: commentText(comment, kind),
     ...(mentions(comment.body ?? '', agent) ? { addressed: 'mention' as const } : {}),
-    channel: forgeChannel(source, ref.number, comment.html_url ?? undefined),
+    channel: forgeChannel(source, ref.number, comment.html_url ?? undefined, repository),
     ...(comment.html_url ?? ref.url ? { url: comment.html_url ?? ref.url } : {}),
-    meta: { number: ref.number, isPr: ref.isPr, ...(ref.prAuthor ? { prAuthor: ref.prAuthor } : {}), commentId: comment.id, kind,
+    meta: { number: ref.number, ...repository ? { repository } : {}, isPr: ref.isPr, ...(ref.prAuthor ? { prAuthor: ref.prAuthor } : {}), commentId: comment.id, kind,
       ...comment.path ? { path: comment.path, line: comment.line ?? comment.original_line ?? null } : {},
       ...comment.in_reply_to_id ? { inReplyTo: comment.in_reply_to_id } : {} } }
 }
@@ -89,19 +103,21 @@ export function commentTrigger(comment: ForgeComment, ref: PullRef, kind: 'conve
  */
 export function issueTrigger(issue: Opened, agent: string, origin: Origin = GITHUB_ORIGIN, human: Humans = isHumanLogin): Trigger {
   const body = issue.body ?? ''
-  const { source } = origin
+  const { source, repository } = origin
   return { id: key(...idParts(origin, 'issue'), String(issue.number)), source,
-    threads: [{ source, id: String(issue.number) }], ...author(origin, issue.user, agent, human), at: issue.created_at,
+    threads: [{ source, id: forgeThreadId(issue.number, repository) }], ...author(origin, issue.user, agent, human), at: issue.created_at,
     text: `${issue.title}\n\n${body}`,
     ...(mentions(body, agent) ? { addressed: 'mention' as const } : {}),
-    channel: forgeChannel(source, issue.number, issue.html_url), url: issue.html_url, meta: { number: issue.number, isPr: false, kind: 'issue' } }
+    channel: forgeChannel(source, issue.number, issue.html_url, repository), url: issue.html_url,
+    meta: { number: issue.number, ...repository ? { repository } : {}, isPr: false, kind: 'issue' } }
 }
 /**
  * Builds the trigger for a newly opened PR's title and description.
  * PR and Issue numbers share one sequence on GitHub and Gitea and never collide, so this reuses `issueTrigger`'s id format.
  */
 export function pullTrigger(pull: Opened, agent: string, origin: Origin = GITHUB_ORIGIN, human: Humans = isHumanLogin): Trigger {
-  return { ...issueTrigger(pull, agent, origin, human), meta: { number: pull.number, isPr: true, prAuthor: pull.user.login, kind: 'pull' } }
+  return { ...issueTrigger(pull, agent, origin, human), meta: { number: pull.number, ...origin.repository ? { repository: origin.repository } : {},
+    isPr: true, prAuthor: pull.user.login, kind: 'pull' } }
 }
 /** Builds a trigger for a default-branch CI transition; default-branch CI has no person to reply to, so it has no `channel`. */
 export function branchCiTrigger(branch: string, sha: string, revision: number, summary: string, url: string, origin: Origin = GITHUB_ORIGIN): Trigger {
@@ -112,9 +128,9 @@ export function branchCiTrigger(branch: string, sha: string, revision: number, s
 }
 export function ciTrigger(pr: { number: number; html_url: string; user: { login: string } }, revision: number, summary: string,
   origin: Origin = GITHUB_ORIGIN): Trigger {
-  const { source } = origin
-  return { id: key(...idParts(origin, 'ci'), String(pr.number), String(revision)), source, threads: [{ source, id: String(pr.number) }],
+  const { source, repository } = origin
+  return { id: key(...idParts(origin, 'ci'), String(pr.number), String(revision)), source, threads: [{ source, id: forgeThreadId(pr.number, repository) }],
     actor: { source, id: '' }, human: false, at: new Date().toISOString(),
-    text: summary, channel: forgeChannel(source, pr.number), url: pr.html_url,
-    meta: { number: pr.number, isPr: true, prAuthor: pr.user.login, ci: true, revision } }
+    text: summary, channel: forgeChannel(source, pr.number, undefined, repository), url: pr.html_url,
+    meta: { number: pr.number, ...repository ? { repository } : {}, isPr: true, prAuthor: pr.user.login, ci: true, revision } }
 }

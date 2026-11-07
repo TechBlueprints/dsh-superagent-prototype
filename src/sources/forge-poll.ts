@@ -3,12 +3,12 @@ import { z } from 'zod'
 import { key, type Thread } from '../core/index.ts'
 import { sameName } from '../infra/text.ts'
 import { validItems, type Tally } from '../infra/commands.ts'
-import { forgeStatus, type ForgeClient, type StreamId } from './forge-client.ts'
+import { covers, forgeStatus, isWildcard, type ForgeClient, type StreamId } from './forge-client.ts'
 import { forgeClient, humanOf } from './forge.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary } from './forge-read.ts'
-import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, issueTrigger, IssueSchema, pullTrigger, type Origin, type PullRef }
-  from './forge-trigger.ts'
-import { observePull, pullsOf, readPull, type Pull } from './forge-pull.ts'
+import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, forgeThreadId, issueTrigger, IssueSchema, parseThreadId, pullTrigger,
+  type Origin, type PullRef } from './forge-trigger.ts'
+import { observePull, pullRefsOf, readPull, type Pull } from './forge-pull.ts'
 import { health, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
@@ -18,8 +18,24 @@ import type { ForgeConfig } from './forge.ts'
 export function pollFailure(failures: number, threshold: number, error: unknown): Health | undefined {
   return failures >= threshold ? health('error', 'pollFailures', { count: String(failures), error: String(error) }) : undefined
 }
-/** The client of the context's instance, whose account setup resolved, also stopping with `signal`. */
-const client = (ctx: SourceContext, signal?: AbortSignal): ForgeClient => forgeClient(ctx.commands, ctx.instance).withSignal(signal)
+/** The client of the context's instance (of `repository` on a wildcard instance), whose account setup resolved, also stopping with `signal`. */
+const client = (ctx: SourceContext, signal?: AbortSignal, repository?: string): ForgeClient => {
+  const instance = forgeClient(ctx.commands, ctx.instance).withSignal(signal)
+  return repository ? instance.forRepository(repository) : instance
+}
+/** Whether the context's instance watches every repository of an owner (`owner/*`). */
+const wildcard = (ctx: SourceContext): boolean => isWildcard(ctx.deployment.forges[ctx.instance]?.repository ?? '')
+/**
+ * An Issue or PR of the context's instance: its Thread id (`12`, or `owner/name#12` on a wildcard instance), its number, and
+ * on a wildcard instance its repository.
+ */
+interface Ref { id: string; number: number; repository?: string }
+const refOf = (ctx: SourceContext, number: number, repository?: string): Ref => wildcard(ctx) && repository
+  ? { id: forgeThreadId(number, repository), number, repository } : { id: String(number), number }
+/** How a Ref reads in health details: `#12`, or `owner/name#12`. */
+const label = (ref: Pick<Ref, 'number' | 'repository'>) => ref.repository ? `${ref.repository}#${ref.number}` : `#${ref.number}`
+/** Push access of each wildcard repository, read once per process when its first notification arrives, by `<instance> <repository>`. */
+const pushable = new Map<string, Promise<boolean>>()
 /** The health entry the forge kind of the context's instance declares: its kind's id. */
 const entry = (ctx: SourceContext): string => ctx.deployment.forges[ctx.instance]?.kind ?? ctx.instance
 const configOf = (ctx: SourceContext) => ctx.config<ForgeConfig>(ctx.instance)
@@ -55,26 +71,28 @@ export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: 
 }
 interface Round {
   started: string; signal?: AbortSignal | undefined
-  pulls: Map<number, Promise<Pull>>; read: Set<number>; failures: string[]; dropped: number[]; abandoned: number[]
+  pulls: Map<string, Promise<Pull>>; read: Set<string>; failures: string[]; dropped: Ref[]; abandoned: Ref[]; unpushable: Set<string>
   tally: Tally
 }
 const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
-  failures: [], dropped: [], abandoned: [], tally: { skipped: 0 } })
+  failures: [], dropped: [], abandoned: [], unpushable: new Set(), tally: { skipped: 0 } })
 const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !configOf(ctx)
-export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
+/** A notified Issue or PR to read again, by its Thread id; `repository` names a wildcard instance's repository. */
+export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number; repository?: string }
 const RETRY_WINDOW_MS = 24 * 3600_000
 /** True when the forge answers HTTP 410 (Gone); HTTP 404 is retried because it can indicate revoked access to a private repository. */
 const deleted = (error: unknown): boolean => forgeStatus(error) === 410
 /** The Origin of the context's instance, which its Triggers carry. */
-const originOf = (ctx: SourceContext): Origin => ({ source: ctx.instance, kind: entry(ctx) })
+const originOf = (ctx: SourceContext, repository?: string): Origin =>
+  ({ source: ctx.instance, kind: entry(ctx), ...wildcard(ctx) && repository ? { repository } : {} })
 const keys = (ctx: SourceContext) => KV.forge(ctx.instance)
-const threadKey = (ctx: SourceContext, number: number | string) => `${ctx.instance}:${number}`
+const threadKey = (ctx: SourceContext, id: number | string) => `${ctx.instance}:${id}`
 /** Records a failed read on the Thread and in the round; deleted (410) or abandoned (24h+) threads do not fail the round. */
-function failed(ctx: SourceContext, round: Round, number: number, error: unknown, abandoned = false): void {
-  if (deleted(error)) round.dropped.push(number)
-  else if (abandoned) round.abandoned.push(number)
-  else round.failures.push(`#${number}: ${String(error)}`)
-  ctx.threads.patch(threadKey(ctx, number), { pollError: String(error) })
+function failed(ctx: SourceContext, round: Round, ref: Ref, error: unknown, abandoned = false): void {
+  if (deleted(error)) round.dropped.push(ref)
+  else if (abandoned) round.abandoned.push(ref)
+  else round.failures.push(`${label(ref)}: ${String(error)}`)
+  ctx.threads.patch(threadKey(ctx, ref.id), { pollError: String(error) })
 }
 const ListedSchema = CommentSchema.extend({ issue_url: z.string().nullish(), pull_request_url: z.string().nullish() })
 /** Repository-wide event streams; `issues` includes PRs, and `comments` covers Issue and PR conversation comments (excluding inline review comments). */
@@ -86,7 +104,8 @@ const STREAMS = [
 /** Polls repository-wide streams (new Issues/PRs, comments, default-branch CI); each stream reads from when it was switched on, resets when switched off, and fails independently. */
 async function pollRepository(ctx: SourceContext, round: Round): Promise<void> {
   const config = configOf(ctx)
-  if (!config) return
+  // A wildcard instance observes no repository as a whole; an instance per repository does.
+  if (!config || wildcard(ctx)) return
   for (const stream of STREAMS) {
     if (stopped(ctx, round)) return
     if (!stream.observed(config)) { ctx.state.set(keys(ctx).stream(stream.id), undefined); continue }
@@ -135,7 +154,7 @@ async function readStream(ctx: SourceContext, round: Round, id: StreamId, config
       const pr = issue.success && !!issue.data.pull_request
       if (!issue.success || !fresh(issue.data.created_at, pr ? 'pulls' : 'issues')) continue
       await ctx.receive(pr ? pullTrigger(issue.data, login, origin, human) : issueTrigger(issue.data, login, origin, human))
-      nameThread(ctx, issue.data.number, issue.data.title)
+      nameThread(ctx, refOf(ctx, issue.data.number), issue.data.title)
       continue
     }
     const number = Number(/\/(?:issues|pulls)\/(\d+)$/.exec((id === 'comments' ? item.issue_url : item.pull_request_url) ?? '')?.[1])
@@ -192,10 +211,12 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   if (signal?.aborted) return interval
   const product = client(ctx).conventions.product
   if (round.failures.length) throw new Error(`${round.failures.length} ${product} reads failed: ${round.failures.slice(0, 3).join('; ')}`)
-  const named = (numbers: number[]) => [...new Set(numbers)].sort((a, b) => a - b).map(number => `#${number}`).join(', ')
+  const named = (refs: Ref[]) => [...new Map(refs.map(ref => [ref.id, ref])).values()]
+    .sort((a, b) => (a.repository ?? '').localeCompare(b.repository ?? '') || a.number - b.number).map(label).join(', ')
   const dropped = (round.dropped.length ? `; deleted on ${product}: ${named(round.dropped)}` : '')
     + (round.abandoned.length ? `; dropped after their reads kept failing: ${named(round.abandoned)}` : '')
     + (round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : '')
+    + (round.unpushable.size ? `; skipped, no push access: ${[...round.unpushable].sort().join(', ')}` : '')
   // A forge that asks for no interval polls at the configured one.
   const next = interval || (configOf(ctx)?.pollSeconds ?? 0)
   ctx.report(entry(ctx), { state: 'ready', detail: `${count} notifications; next poll ≥ ${next}s${dropped}`, at: round.started })
@@ -214,36 +235,48 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
   const interval = listed.interval ?? 0
   const retries = { ...state.get(retryKey) }
   // Failed items from the previous round run first, followed by newly notified items in chronological order; each is read once.
-  const items = new Map(Object.entries(retries).map(([number, retry]) => [Number(number), retry]))
+  const items = new Map(Object.entries(retries).map(([id, retry]) => [id, retry]))
   for (const notification of [...notifications].reverse()) {
-    if (!sameName(notification.repository, repository)) continue
+    if (!covers(repository, notification.repository)) continue
     const { number, pr } = notification
-    if (number === undefined || notification.discussion || items.has(number)) continue
-    items.set(number, { since: [state.get(keys(ctx).cursor(number)) ?? since, since].sort().at(-1)!, pr })
+    if (number === undefined || notification.discussion) continue
+    const ref = refOf(ctx, number, notification.repository)
+    if (items.has(ref.id)) continue
+    // A wildcard's repository is read only where the agent can push, which is read once per repository.
+    if (ref.repository) {
+      const seen = `${ctx.instance} ${ref.repository.toLowerCase()}`
+      if (!pushable.has(seen)) pushable.set(seen, forge.forRepository(ref.repository).canPush().catch(() => { pushable.delete(seen); return false }))
+      if (!await pushable.get(seen)) { round.unpushable.add(ref.repository); continue }
+    }
+    items.set(ref.id, { since: [state.get(keys(ctx).cursor(ref.id)) ?? since, since].sort().at(-1)!, pr, ...ref.repository ? { repository: ref.repository } : {} })
   }
-  for (const [number, item] of items) {
+  for (const [id, item] of items) {
     if (stopped(ctx, round)) return { count: notifications.length, interval }
-    round.read.add(number)
+    const parsed = parseThreadId(id)
+    if (!parsed) { delete retries[id]; continue }
+    const ref = refOf(ctx, parsed.number, item.repository ?? parsed.repository)
+    round.read.add(ref.id)
     try {
-      await readNotified(ctx, round, number, item)
-      delete retries[number]
+      await readNotified(ctx, round, ref, item)
+      delete retries[id]
     } catch (error) {
       if (stopped(ctx, round)) return { count: notifications.length, interval }
       const retry = { ...item, failedAt: item.failedAt ?? round.started, attempts: (item.attempts ?? 0) + 1 }
       // Abandon notification retries after 24 hours of failures so a permanently unreadable thread does not hold source health in error; its cursor stays so a later notification or thread poll still reads what was missed.
       const abandoned = Date.parse(round.started) - Date.parse(retry.failedAt) >= RETRY_WINDOW_MS
-      failed(ctx, round, number, error, abandoned)
-      if (!deleted(error) && !abandoned) { retries[number] = retry; continue }
-      delete retries[number]
+      failed(ctx, round, ref, error, abandoned)
+      if (!deleted(error) && !abandoned) { retries[id] = retry; continue }
+      delete retries[id]
     }
   }
   ctx.atomic(() => { state.set(cursor, cursorAt(round.started)); state.set(retryKey, retries) })
   return { count: notifications.length, interval }
 }
-async function readNotified(ctx: SourceContext, round: Round, number: number, item: Retry): Promise<void> {
+async function readNotified(ctx: SourceContext, round: Round, ref: Ref, item: Retry): Promise<void> {
   const { since } = item
-  const forge = client(ctx, round.signal)
-  const origin = originOf(ctx), human = humanOf(forge.conventions, configOf(ctx))
+  const { number } = ref
+  const forge = client(ctx, round.signal, ref.repository)
+  const origin = originOf(ctx, ref.repository), human = humanOf(forge.conventions, configOf(ctx))
   const { login } = forge.account
   let isPr = item.pr
   if (!isPr) {
@@ -255,36 +288,36 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
       // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
       const opened = Date.parse(issue.created_at) >= Date.parse(since) && !sameName(issue.user.login, login)
       if (opened) await ctx.receive(issueTrigger(issue, login, origin, human))
-      await intakeComments(ctx, { number, isPr: false, url: issue.html_url }, since, round)
-      nameThread(ctx, number, issue.title)
+      await intakeComments(ctx, ref, { number, isPr: false, url: issue.html_url }, since, round)
+      nameThread(ctx, ref, issue.title)
     }
   }
   if (isPr) {
-    const pr = await pull(ctx, round, number)
+    const pr = await pull(ctx, round, ref)
     // Emit a PR description trigger for PRs opened since the cursor; its ID is the same as the one produced by the repository PR stream.
     if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !sameName(pr.user.login, login)) {
       const opened = { number, title: pr.title ?? '', body: pr.body, user: pr.user, created_at: pr.created_at, html_url: pr.html_url }
       await ctx.receive(pullTrigger(opened, login, origin, human))
     }
-    await intakeComments(ctx, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
-    if (pr.title) nameThread(ctx, number, pr.title)
+    await intakeComments(ctx, ref, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
+    if (pr.title) nameThread(ctx, ref, pr.title)
   }
-  ctx.state.set(keys(ctx).cursor(number), cursorAt(round.started))
-  ctx.threads.patch(threadKey(ctx, number), { pollError: undefined })
+  ctx.state.set(keys(ctx).cursor(ref.id), cursorAt(round.started))
+  ctx.threads.patch(threadKey(ctx, ref.id), { pollError: undefined })
 }
 /** Reads and observes a PR at most once per polling round. */
-function pull(ctx: SourceContext, round: Round, number: number): Promise<Pull> {
-  let read = round.pulls.get(number)
+function pull(ctx: SourceContext, round: Round, ref: Ref): Promise<Pull> {
+  let read = round.pulls.get(ref.id)
   if (!read) {
-    read = readPull(ctx, number, round.signal).then(async pr => { await observePull(ctx, pr); return pr })
-    round.pulls.set(number, read)
+    read = readPull(ctx, ref.number, round.signal, ref.repository).then(async pr => { await observePull(ctx, pr); return pr })
+    round.pulls.set(ref.id, read)
   }
   return read
 }
-async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, round: Round): Promise<void> {
-  const forge = client(ctx, round.signal)
+async function intakeComments(ctx: SourceContext, at: Ref, ref: PullRef, since: string, round: Round): Promise<void> {
+  const forge = client(ctx, round.signal, at.repository)
   const { login } = forge.account
-  const origin = originOf(ctx), human = humanOf(forge.conventions, configOf(ctx))
+  const origin = originOf(ctx, at.repository), human = humanOf(forge.conventions, configOf(ctx))
   const kinds = ref.isPr ? ['conversation', 'inline', 'review'] as const : ['conversation'] as const
   for (const kind of kinds) {
     const comments = await forge.comments(ref.number, kind, since, round.tally)
@@ -301,29 +334,31 @@ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, r
   }
 }
 export async function pollTicketPulls(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
-  const numbers = [...new Set(ctx.tickets.open().flatMap(ticket => pullsOf(ticket, true, ctx.instance)))]
-  for (const number of numbers) {
+  const refs = new Map(ctx.tickets.open().flatMap(ticket => pullRefsOf(ticket, true, ctx.instance))
+    .map(pull => [pull.id, refOf(ctx, pull.number, pull.repository)] as const))
+  for (const ref of refs.values()) {
     if (stopped(ctx, round)) return
     try {
-      const pr = await pull(ctx, round, number)
-      if (pr.state !== 'closed' && !pr.merged) await pollChecks(ctx, round, number, pr)
-    } catch (error) { if (!stopped(ctx, round)) failed(ctx, round, number, error) }
+      const pr = await pull(ctx, round, ref)
+      if (pr.state !== 'closed' && !pr.merged) await pollChecks(ctx, round, ref, pr)
+    } catch (error) { if (!stopped(ctx, round)) failed(ctx, round, ref, error) }
   }
 }
 /** Polls a PR's CI checks; only changes after the first baseline observation become Triggers. */
-async function pollChecks(ctx: SourceContext, round: Round, number: number, pr: Pull): Promise<void> {
-  const snapshot = await client(ctx, round.signal).checks(pr.head.sha, round.tally)
+async function pollChecks(ctx: SourceContext, round: Round, ref: Ref, pr: Pull): Promise<void> {
+  const snapshot = await client(ctx, round.signal, ref.repository).checks(pr.head.sha, round.tally)
   const fingerprint = key(JSON.stringify(snapshot))
-  const previous = ctx.state.get(keys(ctx).ci(number))
+  const previous = ctx.state.get(keys(ctx).ci(ref.id))
   if (previous?.fingerprint === fingerprint) return
   const revision = previous ? previous.revision + 1 : 0
-  if (previous) await ctx.receive(ciTrigger(pr, revision, ciSummary(snapshot, `PR #${number}`, `${ctx.instance}/pulls/${number}/checks`), originOf(ctx)))
-  ctx.state.set(keys(ctx).ci(number), { fingerprint, revision })
-  ctx.threads.describe(threadKey(ctx, number), { facts: { ci: ciFact(ciCounts(snapshot)) } })
+  const read = `${ctx.instance}/${ref.repository ? `${ref.repository}/` : ''}pulls/${ref.number}/checks`
+  if (previous) await ctx.receive(ciTrigger(pr, revision, ciSummary(snapshot, `PR ${label(ref)}`, read), originOf(ctx, ref.repository)))
+  ctx.state.set(keys(ctx).ci(ref.id), { fingerprint, revision })
+  ctx.threads.describe(threadKey(ctx, ref.id), { facts: { ci: ciFact(ciCounts(snapshot)) } })
 }
-function nameThread(ctx: SourceContext, number: number, title: string): void {
-  ctx.threads.patch(threadKey(ctx, number), { title })
-  ctx.threads.describe(threadKey(ctx, number), { label: `#${number} ${title}`, facts: { number: { value: `#${number}` } } })
+function nameThread(ctx: SourceContext, ref: Ref, title: string): void {
+  ctx.threads.patch(threadKey(ctx, ref.id), { title })
+  ctx.threads.describe(threadKey(ctx, ref.id), { label: `${label(ref)} ${title}`, facts: { number: { value: label(ref) } } })
 }
 /** Polls subscribed Issue and PR Threads not already read in this round; a deleted (410) Issue is still polled within the horizon (costing one read) and does not fail the round. */
 export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
@@ -331,29 +366,35 @@ export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, roun
     try { await pollThread(ctx, round, thread) }
     catch (error) {
       if (stopped(ctx, round)) throw error
-      if (deleted(error)) round.dropped.push(Number(thread.ref.id)); else round.failures.push(`${thread.key}: ${String(error)}`)
+      const parsed = parseThreadId(thread.ref.id)
+      if (deleted(error) && parsed) round.dropped.push(refOf(ctx, parsed.number, parsed.repository))
+      else round.failures.push(`${thread.key}: ${String(error)}`)
       throw error
     }
-  }, thread => round.read.has(Number(thread.ref.id)))
+  }, thread => round.read.has(thread.ref.id))
 }
 async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Promise<void> {
   // The default branch's CI Thread has no Issue or PR to read; its CI arrives as Triggers.
   if (thread.ref.id.startsWith('ci:')) return
-  const number = Number(thread.ref.id)
-  const forge = client(ctx, round.signal)
-  if (!number) throw new Error(`Subscribed thread has no ${forge.conventions.product} issue or PR number`)
-  round.read.add(number)
+  const parsed = parseThreadId(thread.ref.id)
+  const product = forgeClient(ctx.commands, ctx.instance).conventions.product
+  if (!parsed) throw new Error(`Subscribed thread has no ${product} issue or PR number`)
+  const ref = refOf(ctx, parsed.number, parsed.repository)
+  if (wildcard(ctx) && !ref.repository) throw new Error(`Subscribed thread names no repository of this ${product} Source`)
+  const { number } = ref
+  const forge = client(ctx, round.signal, ref.repository)
+  round.read.add(ref.id)
   if (typeof thread.meta.isPr !== 'boolean' || typeof thread.meta.title !== 'string') {
     const issue = await forge.issue(number)
     ctx.threads.patch(thread.key, { number, isPr: !!issue.pull_request, url: issue.html_url })
-    if (issue.title) nameThread(ctx, number, issue.title)
+    if (issue.title) nameThread(ctx, ref, issue.title)
     thread = ctx.threads.get(thread.key) ?? thread
   }
-  const checkpoint = keys(ctx).cursor(number)
+  const checkpoint = keys(ctx).cursor(ref.id)
   const since = ctx.state.get(checkpoint) ?? thread.createdAt
   if (thread.meta.isPr === true) {
-    const pr = await pull(ctx, round, number)
-    await intakeComments(ctx, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
-  } else await intakeComments(ctx, { number, isPr: false }, since, round)
+    const pr = await pull(ctx, round, ref)
+    await intakeComments(ctx, ref, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
+  } else await intakeComments(ctx, ref, { number, isPr: false }, since, round)
   ctx.state.set(checkpoint, cursorAt(round.started))
 }

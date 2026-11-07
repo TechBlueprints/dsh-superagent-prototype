@@ -10,7 +10,10 @@ import type { ChannelLink, ChannelLinks } from './kind.ts'
 const gone = (error: unknown): boolean => { const status = forgeStatus(error); return status === 410 || (status === 403 && /locked/i.test((error as Error).message)) }
 /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendForge(host: Pick<SourceContext, 'commands'> & { instance: string }, message: OutboundMessage): Promise<'sent' | 'gone'> {
-  const client = forgeClient(host.commands, host.instance)
+  // A wildcard instance's address names the repository of its Issue or PR.
+  const named = message.channel.address.repository
+  const instance = forgeClient(host.commands, host.instance)
+  const client = named ? instance.forRepository(named) : instance
   const { repository, login } = client.account
   const number = Number(message.channel.address.number)
   if (!number) throw new Error(`Missing ${client.conventions.product} reply target`)
@@ -39,8 +42,10 @@ export function forgeLink(address: Record<string, string>, links: ChannelLinks, 
   const number = address.number ?? ''
   const forge = links.forges?.[instance]
   const conventions = forge && conventionsOf(forge)
-  const review = !!forge && !!conventions?.address(address.url ?? '', forge.repository)?.discussion
-  return { url: address.url ?? (forge && conventions ? conventions.page(forge.repository, Number(number)) : ''),
-    label: review ? { zh: `${product} #${number} 的 review 讨论`, en: `Review discussion on ${product} #${number}` }
-      : { zh: `${product} #${number}`, en: `${product} #${number}` } }
+  const repository = address.repository ?? forge?.repository ?? ''
+  const review = !!forge && !!conventions?.address(address.url ?? '', repository)?.discussion
+  const name = address.repository ? `${address.repository}#${number}` : `#${number}`
+  return { url: address.url ?? (forge && conventions ? conventions.page(repository, Number(number)) : ''),
+    label: review ? { zh: `${product} ${name} 的 review 讨论`, en: `Review discussion on ${product} ${name}` }
+      : { zh: `${product} ${name}`, en: `${product} ${name}` } }
 }

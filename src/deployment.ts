@@ -43,17 +43,19 @@ export function machineOf(config: DeploymentConfig): Machine {
   return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
+/** A forge Source's repository: owner/name, `owner/*` for every repository of the owner, or empty while unset. */
+const REPOSITORY = /^([A-Za-z0-9_.-]+\/([A-Za-z0-9_.-]+|\*))?$/
 /** A forge host name, optionally with a port, such as github.com or git.example.com:8443. */
 const HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?$/
 export const GithubAccountsSchema = z.object({
   host: z.string().trim().toLowerCase().regex(HOST, 'a host name such as github.com').default('github.com'),
-  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  repository: z.string().trim().regex(REPOSITORY, 'owner/name, or owner/* for every repository of the owner').default(''),
   cli: z.string().trim().default(''),
 })
 /** A Gitea Source's accounts: the host, the repository, the agent's API token in a file only its owner reads, and its tea CLI. */
 export const GiteaAccountsSchema = z.object({
   host: z.string().trim().toLowerCase().regex(/^([a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?)?$/, 'a host name such as git.example.com').default(''),
-  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  repository: z.string().trim().regex(REPOSITORY, 'owner/name, or owner/* for every repository of the owner').default(''),
   tokenFile: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'an absolute path').default(''),
   cli: z.string().trim().default(''),
 })
@@ -158,6 +160,15 @@ export async function resolveGithub(machine: Machine, github: unknown, probe: Pr
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { fail('agentCliMissing', { output: reason(error) }) }
   const text = await probe([cli, 'api', 'user', ...hostFlag(host)]).catch((error: unknown) => fail('agentCliSignedOut', { output: reason(error) }))
   const agent = parsed(GithubUser, text) ?? fail('agentCliNoAccount')
+  // A wildcard names every repository of an owner: the owner must exist; push access is read per repository when it first notifies.
+  if (remote.endsWith('/*')) {
+    const owner = parsed(z.looseObject({ login: z.string() }), await probe([cli, 'api', `users/${remote.slice(0, -2)}`, ...hostFlag(host)])
+      .catch((error: unknown) => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })))
+      ?? fail('repositoryUnreported', { repository: remote })
+    const repository = `${owner.login}/*`
+    return { id, kind: 'github', host, repository, ...githubAddresses(host, repository), login: agent.login,
+      commitEmail: `${agent.id}+${agent.login}@users.noreply.${host}`, cli, shim: 'gh', credential: { helper: 'gh' } }
+  }
   // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
   const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}', ...hostFlag(host)])
     .catch((error: unknown) => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }))) ?? fail('repositoryUnreported', { repository: remote })
@@ -229,11 +240,23 @@ export async function resolveGitea(machine: Machine, gitea: unknown, probe: Prob
   const user = await get('user').catch((error: unknown) => fail('tokenRejected', { host, file: tokenFile, output: reason(error) }))
   if (user.status === 401 || user.status === 403) fail('tokenRejected', { host, file: tokenFile })
   const agent = GiteaUser.safeParse(user.body).data ?? fail('agentCliNoAccount')
-  const access = await get(`repos/${remote}`).catch((error: unknown) => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }))
-  if (!access.body) fail('repositoryUnreadable', { account: agent.login, repository: remote, output: `HTTP ${access.status}` })
-  const repo = GiteaRepository.safeParse(access.body).data ?? fail('repositoryUnreported', { repository: remote })
-  const repository = repo.full_name
-  if (repo.permissions?.push !== true) fail('repositoryReadOnly', { account: agent.login, repository })
+  let repository: string
+  if (remote.endsWith('/*')) {
+    // A wildcard names every repository of an owner, an organization or a user; push access is read per repository when it first notifies.
+    const name = remote.slice(0, -2)
+    const unreadable = (error: unknown): never => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
+    const org = await get(`orgs/${name}`).catch(unreadable)
+    const owner = org.body ? org.body : (await get(`users/${name}`).catch(unreadable)).body
+    const found = z.looseObject({ username: z.string().optional(), login: z.string().optional(), name: z.string().optional() }).safeParse(owner).data
+    if (!found) fail('repositoryUnreadable', { account: agent.login, repository: remote, output: `HTTP ${org.status}` })
+    repository = `${found!.username ?? found!.login ?? name}/*`
+  } else {
+    const access = await get(`repos/${remote}`).catch((error: unknown) => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }))
+    if (!access.body) fail('repositoryUnreadable', { account: agent.login, repository: remote, output: `HTTP ${access.status}` })
+    const repo = GiteaRepository.safeParse(access.body).data ?? fail('repositoryUnreported', { repository: remote })
+    repository = repo.full_name
+    if (repo.permissions?.push !== true) fail('repositoryReadOnly', { account: agent.login, repository })
+  }
   // Workers act through tea, which must be signed in to the same account on this host.
   const listed = await probe([cli, 'logins', 'list', '--output', 'json']).catch((error: unknown) => fail('agentCliSignedOut', { output: reason(error) }))
   const logins = parsed(TeaLogins, listed) ?? fail('agentCliNoAccount')

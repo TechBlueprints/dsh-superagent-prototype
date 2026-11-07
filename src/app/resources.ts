@@ -4,6 +4,7 @@ import { UserError, key, latestReport, reached, runningAssignment, threadKey, ty
 import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { readForge } from '../sources/forge-read.ts'
 import { forgeClient } from '../sources/forge.ts'
+import { covers, isWildcard } from '../sources/forge-client.ts'
 import { feishuReferences, feishuRead } from '../sources/feishu-read.ts'
 import { feishuRef } from '../sources/feishu.ts'
 import { feishuTriggerId } from '../sources/feishu-trigger.ts'
@@ -52,7 +53,7 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'models', holds: 'model providers, the DSH default and each role\'s model' },
   { name: 'models/<provider>', holds: 'one provider\'s models' },
   { name: 'feishu/<trigger-id>/…', holds: 'a Feishu original, as the dsh-superagent-feishu skill describes', executor: true },
-  { name: '<forge>/…', holds: 'a forge original, as the dsh-superagent-github or -gitea skill describes; <forge> is the forge Source\'s id, such as github', executor: true },
+  { name: '<forge>/…', holds: 'a forge original, as the dsh-superagent-github or -gitea skill describes; <forge> is the forge Source\'s id, such as github, and a wildcard Source\'s names the repository next, <forge>/<owner>/<name>/…', executor: true },
 ]
 export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(resource => !executor || resource.executor)
   .map(resource => `${resource.name}: ${resource.holds}`).join('; ')
@@ -299,8 +300,13 @@ function forgeRoute(host: ResourceHost, name: string): Route | undefined {
   try { forges = host.commands.deployment.forges } catch { return undefined /* Setup still waits; no forge resolved. */ }
   if (!id || !(id in forges)) return undefined
   return [`${id}/`, read => {
-    const client = forgeClient(read.host.commands, id).withSignal(read.signal)
-    return sourcePage(read, client.conventions.product, () => readForge(client, read.resource, id))
+    const instance = forgeClient(read.host.commands, id).withSignal(read.signal)
+    // A wildcard instance's resources name the repository next: `<id>/<owner>/<name>/issues/12`.
+    if (!isWildcard(instance.account.repository)) return sourcePage(read, instance.conventions.product, () => readForge(instance, read.resource, id))
+    const [owner, repo] = read.rest.split('/')
+    const repository = `${owner}/${repo}`
+    if (!owner || !repo || !covers(instance.account.repository, repository)) throw new Error(`Name the repository: ${id}/<owner>/<name>/issues/<number>`)
+    return sourcePage(read, instance.conventions.product, () => readForge(instance.forRepository(repository), read.resource, `${id}/${repository}`))
   }]
 }
 /**

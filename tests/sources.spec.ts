@@ -900,6 +900,57 @@ describe('github source', () => {
     expect(store.get(KV.github.since)).toBeUndefined()
     store.close()
   })
+  it('polls a wildcard instance\'s account notifications into Threads of each repository it may push to', async () => {
+    const settings = SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { sources: { 'github-tb': { allowed: [{ id: 'alice' }] } } },
+      sources: { 'github-tb': { enabled: true, kind: 'github', config: { repository: 'TechBlueprints/*', cli: '/opt/gh' } } } })
+    const tb = testForge({ id: 'github-tb', repository: 'TechBlueprints/*', cli: '/opt/gh', cloneUrl: 'https://github.com/TechBlueprints/*.git' })
+    const deployment = testDeployment({ forges: { 'github-tb': tb } })
+    const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
+    store.saveSettings(settings)
+    const sources = new SourceRegistry(() => store.settings(), new HealthBoard())
+    sources.register(githubKind)
+    const commands = new Commands(() => deployment, {}, new AbortController().signal)
+    const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources),
+      assessor: { request: vi.fn(async () => {}) }, executor: { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) },
+      outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+    const receive = vi.fn(async (value: Trigger) => engine.receive(value))
+    const ctx = sourceContextOf({ store, engine, outbox: { send: () => {} }, commands, sources, deployment, ready: Promise.resolve(),
+      configured: () => true, receive }, githubKind, 'github-tb')
+    const reads: string[] = []
+    const notified = (repository: string, number: number) => ({ repository: { full_name: repository },
+      subject: { url: `https://api.github.com/repos/${repository}/issues/${number}`, type: 'Issue' } })
+    vi.spyOn(commands, 'run').mockImplementation(async (_program, args) => {
+      reads.push(args[1]!)
+      const path = args[1]!.split('?')[0]!
+      const value = path === 'notifications' ? [notified('TechBlueprints/widgets', 12), notified('TechBlueprints/readonly', 3), notified('Other/repo', 4)]
+        : path === 'repos/TechBlueprints/widgets' ? { permissions: { push: true } } : path === 'repos/TechBlueprints/readonly' ? { permissions: { push: false } }
+          : path === 'repos/TechBlueprints/widgets/issues/12' ? issue(12, { html_url: 'https://github.com/TechBlueprints/widgets/issues/12', body: '@agent-bot fix it' }) : []
+      if (args.includes('--include')) return `HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify(value)}`
+      return JSON.stringify(args.includes('--slurp') ? [value] : value)
+    })
+    store.set(KV.forge('github-tb').since, '2026-09-08T23:59:00.000Z')
+    await pollRound(ctx)
+    // The account's notifications, each repository's push access once, and the one Issue of a repository the agent may push to.
+    expect(reads.map(read => read.split('?')[0])).toEqual(['notifications', 'repos/TechBlueprints/readonly', 'repos/TechBlueprints/widgets',
+      'repos/TechBlueprints/widgets/issues/12', 'repos/TechBlueprints/widgets/issues/12/comments'])
+    const thread = 'TechBlueprints/widgets#12'
+    expect(receive.mock.calls.map(([value]) => [value.id, value.threads[0], value.channel?.thread, value.channel?.address, value.meta.repository])).toEqual([[
+      key('github-issue', 'github-tb', 'TechBlueprints/widgets', '12'), { source: 'github-tb', id: thread }, `github-tb:${thread}`,
+      { number: '12', url: 'https://github.com/TechBlueprints/widgets/issues/12', repository: 'TechBlueprints/widgets' }, 'TechBlueprints/widgets']])
+    expect(store.threads.get(`github-tb:${thread}`)?.meta).toMatchObject({ title: 'Login fails', label: 'TechBlueprints/widgets#12 Login fails' })
+    expect(store.get(KV.forge('github-tb').cursor(thread))).toBeDefined()
+    expect(sources.healthEntries(['github-tb']).get('github-tb')?.get()?.detail).toContain('skipped, no push access: TechBlueprints/readonly')
+    // A page of one of its repositories names its Thread (and the GitHub Source's own, which names no repository here, its 12); a bare
+    // number names none of a wildcard's.
+    expect(sources.find('https://github.com/TechBlueprints/widgets/pull/12')).toEqual({ threads: ['github:12', `github-tb:${thread}`], terms: [] })
+    expect(sources.find('#12')).toEqual({ threads: ['github:12'], terms: [] })
+    // A reply goes to the repository its address names.
+    const posted: string[][] = []
+    vi.spyOn(commands, 'gh').mockImplementation(async args => { posted.push(args as string[]); return args.includes('--slurp') ? [[]] : {} })
+    expect(await sources.send({ id: 'r1', kind: 'reply', text: 'On it', channel: receive.mock.calls[0]![0].channel! }, commands)).toBe('sent')
+    expect(posted.map(args => args[1])).toEqual(['repos/TechBlueprints/widgets/issues/12/comments', 'repos/TechBlueprints/widgets/issues/12/comments'])
+    store.close()
+  })
   it('takes in a comment on an earlier Issue from its notification, without the Issue body', async () => {
     const h = host()
     const url = 'https://github.com/acme/widgets/issues/12'

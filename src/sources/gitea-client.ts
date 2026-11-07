@@ -8,7 +8,7 @@ import { z } from 'zod'
 import { readTokenFile, type ForgeAccount } from '../deployment.ts'
 import { validItems, type Commands, type Tally } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
-import { ForgeError, type CiSnapshot, type CommentKind, type ForgeClient, type ForgeConventions, type ForgeNotification, type StreamId,
+import { ForgeError, isWildcard, type CiSnapshot, type CommentKind, type ForgeClient, type ForgeConventions, type ForgeNotification, type StreamId,
   type StreamPage } from './forge-client.ts'
 import { CommentSchema, IssueSchema, type ForgeComment, type ForgeIssue } from './forge-trigger.ts'
 
@@ -72,6 +72,13 @@ export class GiteaClient implements ForgeClient {
   private repositoryProbe?: Promise<boolean>
   constructor(readonly commands: Commands, readonly account: ForgeAccount) { this.conventions = giteaConventions(account) }
   withSignal(signal?: AbortSignal): GiteaClient { return signal ? new GiteaClient(this.commands.withSignal(signal), this.account) : this }
+  forRepository(repository: string): GiteaClient {
+    return sameName(repository, this.account.repository) ? this
+      : new GiteaClient(this.commands, { ...this.account, repository, cloneUrl: `${this.account.web}/${repository}.git` })
+  }
+  async canPush(): Promise<boolean> {
+    return z.looseObject({ permissions: z.looseObject({ push: z.boolean().nullish() }).nullish() }).parse(await this.get('')).permissions?.push === true
+  }
   private get token(): string {
     if (this.account.credential.helper !== 'token-file') throw new Error(`The ${this.account.id} Source has no token file`)
     return readTokenFile(this.account.credential.path)
@@ -79,6 +86,7 @@ export class GiteaClient implements ForgeClient {
   private get signal(): AbortSignal { return AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.commands.lifetime]) }
   /** Sends one request to a path of the account's repository (or, with a leading `/`, of the API root). */
   async request(path: string, init: { method?: string; body?: unknown } = {}): Promise<{ value: unknown; headers: Headers }> {
+    if (!path.startsWith('/') && isWildcard(this.account.repository)) throw new Error('A wildcard Gitea Source reads a repository through its client for that repository')
     const inside = path.startsWith('/') ? path.slice(1) : path ? `repos/${this.account.repository}/${path}` : `repos/${this.account.repository}`
     if (/(^|\/)\.\.?(\/|\?|$)/.test(inside)) throw new Error('Gitea calls are restricted to the configured repository')
     const token = this.token
@@ -123,7 +131,9 @@ export class GiteaClient implements ForgeClient {
     }
   }
   async notifications(since: string, tally?: Tally): Promise<{ items: ForgeNotification[] }> {
-    const listed = validItems(NotificationSchema, await this.list(`notifications?all=true&since=${encodeURIComponent(since)}`), tally)
+    // A wildcard instance reads the account's notifications, which name every repository; another reads its repository's.
+    const path = `${isWildcard(this.account.repository) ? '/' : ''}notifications?all=true&since=${encodeURIComponent(since)}`
+    const listed = validItems(NotificationSchema, await this.list(path), tally)
     // Gitea names a PR, too, by its Issue address, and says it is one in `subject.type`.
     return { items: listed.map(item => {
       const number = Number(/\/issues\/(\d+)$/.exec(item.subject.url ?? '')?.[1]) || undefined

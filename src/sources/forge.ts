@@ -8,7 +8,8 @@ import { z } from 'zod'
 import type { ForgeAccount, ForgeKind } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
-import type { ForgeClient, ForgeConventions } from './forge-client.ts'
+import { covers, isWildcard, type ForgeClient, type ForgeConventions } from './forge-client.ts'
+import { forgeThreadId } from './forge-trigger.ts'
 import { GithubClient, githubConventions } from './github-client.ts'
 import { GiteaClient, giteaConventions } from './gitea-client.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
@@ -77,11 +78,13 @@ export function forgeKind<C extends ForgeConfig>(spec: ForgeSpec<C>, parts: Pick
       return { listened: true, observed: row !== undefined && config[OBSERVED[row]], ...row ? { row } : {} }
     },
     health: [spec.kind], ...parts,
-    // `#12`, `12`, or the page of an Issue or PR of the instance's repository on its host, names Thread 12 of the instance.
+    // `#12`, `12`, or the page of an Issue or PR of the instance's repository on its host, names Thread 12 of the instance; on a
+    // wildcard instance, only the page of one of its repositories names a Thread, `owner/name#12`.
     find: (query, instance, config = {}) => {
       const host = spec.host(config), repository = typeof config.repository === 'string' ? config.repository : ''
       const page = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/(?:pulls?|issues)\/(\d+)/.exec(query.trim())
-      const listed = page && sameName(page[1]!, host) && (!repository || sameName(page[2]!, repository))
+      const listed = page && sameName(page[1]!, host) && (!repository || covers(repository, page[2]!))
+      if (isWildcard(repository)) return { threads: listed ? [`${instance}:${forgeThreadId(page[3]!, page[2]!)}`] : [], terms: [] }
       const number = (/^#?(\d+)$/.exec(query.trim()) ?? (listed ? [page[0], page[3]] : null))?.[1]
       return { threads: number ? [`${instance}:${number}`] : [], terms: [] }
     },

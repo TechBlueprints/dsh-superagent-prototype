@@ -33,8 +33,8 @@ export const giteaKind: SourceKind<GiteaConfig> = forgeKind<GiteaConfig>({
   fields: [
     { key: 'host', type: 'text', pattern: '[A-Za-z0-9.\\-]+(:[0-9]+)?', label: { zh: 'Gitea 主机', en: 'Gitea host' },
       hint: { zh: 'Gitea 服务器的主机名，例如 git.example.com；API 在 https://<主机>/api/v1。保存时检查令牌，然后重启 dsh-superagent。', en: 'The Gitea server\'s host name, such as git.example.com, whose API is https://<host>/api/v1. Saving checks the token, then restarts dsh-superagent.' } },
-    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
-      hint: { zh: '写作 owner/name。保存时检查令牌的账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. Saving checks that the token\'s account can push to it, then restarts dsh-superagent.' } },
+    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/([A-Za-z0-9_.\\-]+|\\*)', label: { zh: '监听的仓库', en: 'Repository' },
+      hint: { zh: '写作 owner/name，或者 owner/* 表示这个 owner 的所有仓库：那样只接收发给智能体的通知，不观察整个仓库，推送权限在每个仓库第一次通知时检查。保存时检查令牌的账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name, or owner/* for every repository of the owner, which receives only the agent\'s notifications, observes no repository as a whole, and reads push access per repository when it first notifies. Saving checks that the token\'s account can push to it, then restarts dsh-superagent.' } },
     { key: 'tokenFile', type: 'text', label: { zh: '智能体的令牌文件', en: 'Agent token file' },
       hint: { zh: '绝对路径，文件权限 0600，第一行是智能体账号的 Gitea API 令牌。轮询读它；执行器的 git 通过 dsh-superagent 的凭据脚本用它推送。', en: 'An absolute path to a file of mode 0600 whose first line is the agent account\'s Gitea API token. Polling reads it, and the Executor\'s git pushes with it through dsh-superagent\'s credential helper.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 tea', en: 'Agent tea CLI' },

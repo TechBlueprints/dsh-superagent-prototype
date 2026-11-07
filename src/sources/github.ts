@@ -29,8 +29,8 @@ export const githubKind: SourceKind<GithubConfig> = forgeKind<GithubConfig>({
   schema: GithubConfigSchema as unknown as z.ZodType<GithubConfig>,
   host: config => typeof config.host === 'string' && config.host ? config.host : 'github.com',
   fields: [
-    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
-      hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
+    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/([A-Za-z0-9_.\\-]+|\\*)', label: { zh: '监听的仓库', en: 'Repository' },
+      hint: { zh: '写作 owner/name，或者 owner/* 表示这个 owner 的所有仓库：那样只接收发给智能体的通知，不观察整个仓库，推送权限在每个仓库第一次通知时检查。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name, or owner/* for every repository of the owner, which receives only the agent\'s notifications, observes no repository as a whole, and reads push access per repository when it first notifies. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 GitHub CLI', en: 'Agent GitHub CLI' },
       hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
     { key: 'host', type: 'text', advanced: true, pattern: '[A-Za-z0-9.\\-]+(:[0-9]+)?', label: { zh: 'GitHub 主机', en: 'GitHub host' },

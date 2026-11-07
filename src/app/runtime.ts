@@ -172,7 +172,7 @@ export class Runtime extends Service implements SourceHost {
           const current = store.tickets.get(ticket.id) ?? ticket
           const account = forgeOf(current, setup.deployment, sourceTrigger(runtime, current), store.settings())
           const kind = account && runtime.sources.kind(account.kind)
-          return account && kind ? runtime.context(kind, account.id) : undefined
+          return account && kind ? { context: runtime.context(kind, account.id), account } : undefined
         },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }

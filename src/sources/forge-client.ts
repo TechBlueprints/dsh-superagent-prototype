@@ -6,6 +6,14 @@ import type { ForgeAccount } from '../deployment.ts'
 import { CliError, type Tally } from '../infra/commands.ts'
 import type { ForgeComment, ForgeIssue } from './forge-trigger.ts'
 
+/** True for a wildcard instance's repository, `owner/*`, which names every repository of the owner. */
+export const isWildcard = (repository: string): boolean => repository.endsWith('/*')
+/** Whether `repository` (owner/name) is one the instance's `configured` repository names: itself, or one of a wildcard owner's. */
+export function covers(configured: string, repository: string): boolean {
+  const lower = (text: string) => text.toLowerCase()
+  return isWildcard(configured) ? lower(repository.split('/')[0] ?? '') === lower(configured.slice(0, -2)) && repository.includes('/')
+    : lower(configured) === lower(repository)
+}
 /** A failed forge call; `code` is the forge's HTTP status (410 for a deleted Issue or PR, 304 for an unchanged list). */
 export class ForgeError extends CliError {}
 /** The HTTP status of a failed forge call, if it has one. */
@@ -51,6 +59,10 @@ export interface ForgeClient {
   readonly conventions: ForgeConventions
   /** The same client whose calls also stop with `signal`. */
   withSignal(signal?: AbortSignal): ForgeClient
+  /** The client of another repository of the same account, such as one of a wildcard (`owner/*`) instance's. */
+  forRepository(repository: string): ForgeClient
+  /** The agent's push access to the client's repository. */
+  canPush(): Promise<boolean>
   /**
    * The agent's notifications since `since`, oldest last as the forge lists them, and the polling interval the forge asks
    * for, in seconds, if any.
