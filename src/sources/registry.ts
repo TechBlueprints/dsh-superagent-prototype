@@ -157,7 +157,8 @@ export class SourceRegistry implements SourceScope {
   }
   find(query: string): { threads: string[]; terms: string[] } {
     const settings = this.settings()
-    const found = [...this.kinds.values()].flatMap(kind => kind.find ? this.idsOf(kind, settings).map(id => kind.find!(query, id)) : [])
+    const found = [...this.kinds.values()].flatMap(kind => kind.find
+      ? this.idsOf(kind, settings).map(id => kind.find!(query, id, this.resolve(kind, id, settings.sources[id]).config)) : [])
     return { threads: [...new Set(found.flatMap(item => item.threads))], terms: [...new Set(found.flatMap(item => item.terms))] }
   }
   repliesTo(trigger: Trigger): string | undefined { return this.kindFor(trigger.source)?.repliesTo?.(trigger) }

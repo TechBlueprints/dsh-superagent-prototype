@@ -8,7 +8,7 @@ import { Store } from '../src/app/store.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { githubKind } from '../src/sources/github.ts'
-import { githubLink } from '../src/sources/github-channel.ts'
+import { githubLink } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 
 let directory: string

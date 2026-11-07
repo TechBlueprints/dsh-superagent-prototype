@@ -17,8 +17,8 @@ import { policyHistory } from '../src/app/settings-history.ts'
 import { KV } from '../src/kv.ts'
 import { feishuLink } from '../src/sources/feishu-channel.ts'
 import { feishuChannel, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
-import { githubLink } from '../src/sources/github-channel.ts'
-import { githubChannel } from '../src/sources/github-trigger.ts'
+import { githubLink } from '../src/sources/github.ts'
+import { githubChannel } from '../src/sources/github.ts'
 import { followupOwners, type ChannelRef } from '../src/core/index.ts'
 
 let directory: string

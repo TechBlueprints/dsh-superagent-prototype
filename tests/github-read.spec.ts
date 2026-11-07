@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
-import { readGithub, pullChecks } from '../src/sources/github-read.ts'
+import { readGithub, pullChecks } from '../src/sources/forge-read.ts'
 import { GithubClient } from '../src/sources/github-client.ts'
 
 const deployment = testDeployment()

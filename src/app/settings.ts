@@ -245,7 +245,7 @@ export class Settings {
     const { sources } = this.host
     if (!this.host.setup.configured()) return []
     return sources.instances().filter(instance => instance.installed && instance.enabled).flatMap(instance => {
-      const sync = sources.kind(instance.id)?.policy?.sync
+      const sync = sources.kindFor(instance.id)?.policy?.sync
       const part = sources.policyPart(instance.id)
       return sync && part && sync.ready(part) ? [instance.id] : []
     })
@@ -262,7 +262,7 @@ export class Settings {
     const health = this.syncHealth(id)
     try {
       const revision = store.blockRevision('policy')
-      const part = await sources.kind(id)!.policy!.sync!.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
+      const part = await sources.kindFor(id)!.policy!.sync!.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
       if (revision !== store.blockRevision('policy')) throw new SettingsConflict('Policy changed during synchronization. Retry with the current settings.')
       const policy = store.settings().policy
       // Skip saving a new revision when the synced list is unchanged.

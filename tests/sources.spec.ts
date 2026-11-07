@@ -5,9 +5,10 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
 import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
 import { runFeishu } from '../src/sources/feishu-loops.ts'
-import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
-import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
-import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
+import { commentTrigger, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/forge-trigger.ts'
+import { githubAddress, githubChannel } from '../src/sources/github.ts'
+import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/forge-pull.ts'
+import { ciCounts, ciFact, ciSummary } from '../src/sources/forge-read.ts'
 import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
 import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -16,7 +17,7 @@ import { Store } from '../src/app/store.ts'
 import { Commands, commandError } from '../src/infra/commands.ts'
 import { GithubClient } from '../src/sources/github-client.ts'
 import { HealthBoard } from '../src/infra/health.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testForge } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SetupError, type SetupProblem } from '../src/setup.ts'
@@ -851,6 +852,53 @@ describe('github source', () => {
     expect(h.engine.candidate(id)?.strength).toBe('explicit')
     expect(h.store.threads.get('github:12')!.meta).toMatchObject({ title: 'Login fails', label: '#12 Login fails' })
     h.store.close()
+  })
+  it('keeps the GitHub Source\'s own ids and keys as they were, and gives a further GitHub instance its own', async () => {
+    // Golden ids: what the GitHub Source has always stored, which no migration rewrites.
+    expect(issueTrigger(issue(12), 'agent-bot').id).toBe(key('github-issue', '12'))
+    expect([KV.github.since, KV.github.retries, KV.github.cursor(12), KV.github.stream('issues'), KV.github.branchCi, KV.github.ci(7)])
+      .toEqual(['github-since', 'github-retry', 'github-cursor:12', 'github-stream:issues', 'github-branch-ci', 'github-ci:7'])
+    expect([KV.forge('github').since, KV.forge('github').cursor(12), KV.forge('github').ci.prefix]).toEqual(['github-since', 'github-cursor:12', 'github-ci:'])
+    const corp = { source: 'github-corp', kind: 'github' }
+    const trigger = issueTrigger(issue(12), 'agent-bot', corp)
+    expect(trigger).toMatchObject({ id: key('github-issue', 'github-corp', '12'), source: 'github-corp', threads: [{ source: 'github-corp', id: '12' }],
+      actor: { source: 'github-corp', id: 'alice' }, channel: { source: 'github-corp', thread: 'github-corp:12' } })
+    expect(KV.forge('github-corp').cursor(12)).toBe('github-corp-cursor:12')
+    // A further instance polls its own repository on its own host into its own Threads and records.
+    const settings = SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { sources: { 'github-corp': { allowed: [{ id: 'alice' }] } } },
+      sources: { 'github-corp': { enabled: true, kind: 'github', config: { host: 'ghe.example.com', repository: 'corp/app', cli: '/opt/gh-corp' } } } })
+    const forges = { github: testForge(), 'github-corp': testForge({ id: 'github-corp', host: 'ghe.example.com', repository: 'corp/app',
+      web: 'https://ghe.example.com', api: 'https://ghe.example.com/api/v3', cli: '/opt/gh-corp' }) }
+    const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
+    store.saveSettings(settings)
+    const sources = new SourceRegistry(() => store.settings(), new HealthBoard())
+    sources.register(githubKind)
+    const commands = new Commands(() => testDeployment({ forges }), {}, new AbortController().signal)
+    const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources),
+      assessor: { request: vi.fn(async () => {}) }, executor: { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) },
+      outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+    const receive = vi.fn(async (value: Trigger) => engine.receive(value))
+    const ctx = sourceContextOf({ store, engine, outbox: { send: () => {} }, commands, sources, deployment: testDeployment({ forges }),
+      ready: Promise.resolve(), configured: () => true, receive }, githubKind, 'github-corp')
+    const argv: string[][] = []
+    vi.spyOn(commands, 'run').mockImplementation(async (program, args) => {
+      argv.push([program, ...args])
+      const path = args[1]!.replace(/^repos\/corp\/app\//, '').split('?')[0]!
+      const value = path === 'notifications' ? [{ repository: { full_name: 'corp/app' },
+        subject: { url: 'https://ghe.example.com/api/v3/repos/corp/app/issues/12', type: 'Issue' } }]
+        : path === 'issues/12' ? { ...issue(12, { html_url: 'https://ghe.example.com/corp/app/issues/12', body: '@agent-bot fix it' }) } : []
+      if (args.includes('--include')) return `HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify(value)}`
+      return JSON.stringify(args.includes('--slurp') ? [value] : value)
+    })
+    store.set(KV.forge('github-corp').since, '2026-09-08T23:59:00.000Z')
+    await pollRound(ctx)
+    expect(receive.mock.calls.map(([value]) => [value.id, value.source, value.threads[0]])).toEqual([[key('github-issue', 'github-corp', '12'),
+      'github-corp', { source: 'github-corp', id: '12' }]])
+    expect(argv.every(call => call[0] === '/opt/gh-corp' && call.slice(-2).join(' ') === '--hostname ghe.example.com')).toBe(true)
+    expect(store.threads.get('github-corp:12')?.meta).toMatchObject({ title: 'Login fails' })
+    expect(store.get(KV.forge('github-corp').cursor(12))).toBeDefined()
+    expect(store.get(KV.github.since)).toBeUndefined()
+    store.close()
   })
   it('takes in a comment on an earlier Issue from its notification, without the Issue body', async () => {
     const h = host()

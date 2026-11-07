@@ -90,8 +90,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   multiple?: true
   title: Localized
   description: Localized
-  /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
-  facts?(deployment: Deployment | undefined): Record<string, Localized | string>
+  /** Read-only status facts of instance `instance` (by default the kind's own) derived from `deployment` (undefined while waiting for setup), keyed by field key. */
+  facts?(deployment: Deployment | undefined, instance?: string): Record<string, Localized | string>
   /** Validates stored and submitted configuration and fills defaults. */
   schema: z.ZodType<C>
   fields: FieldSpec[]
@@ -103,8 +103,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
-  /** Maps a search query to candidate Thread keys of instance `instance` (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
-  find?(query: string, instance: string): { threads: string[]; terms: string[] }
+  /** Maps a search query to candidate Thread keys of instance `instance` with configuration `config` (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
+  find?(query: string, instance: string, config?: Record<string, unknown>): { threads: string[]; terms: string[] }
   /** Returns the ID of the Trigger whose message this Trigger replies to, when derivable without a network read. */
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */
