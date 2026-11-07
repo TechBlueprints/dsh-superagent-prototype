@@ -127,7 +127,7 @@ it('points a setup problem at the settings that fix it', async () => {
   Element.prototype.scrollIntoView = scroll
   await mount()
   expect(text()).toContain(zh.problemSetup)
-  expect(text()).toContain(zh['setup.agentCliUnset'])
+  expect(text()).toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
   // Nothing runs while setup waits, so the Executor says so instead of counting.
   expect(text()).toContain(zh.executorWaitingSetup)
   expect(all('.dt-stat').map(stat => stat.textContent)).not.toContain('执行中2 / 3')
@@ -223,13 +223,13 @@ it('shows a setup problem on its Source card within one read of the settings, wh
   at({ page: 'settings', query: { group: 'source' } })
   await mount()
   const card = () => document.getElementById('dt-source-github')!
-  expect(card().textContent).not.toContain(zh['setup.agentCliUnset'])
+  expect(card().textContent).not.toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
   server.setup = { ...server.setup, problem: problemOf('agentCliUnset') }
   // The settings are read every five seconds, as the state is; the Source settings do not read the Source status.
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) }); await settle()
   expect(server.requests.filter(request => request.path === 'settings')).toHaveLength(2)
   expect(server.requests.some(request => request.path === 'sources')).toBe(false)
-  expect(card().textContent).toContain(zh['setup.agentCliUnset'])
+  expect(card().textContent).toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
 })
 
 it('lists the messages a Source did not send in the last day under it, newest first, with why and where they belong', async () => {

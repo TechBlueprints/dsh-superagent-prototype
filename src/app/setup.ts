@@ -23,8 +23,12 @@ export const setupChanged = (before: Settings, after: Settings): boolean => setu
  */
 export class Setup {
   private resolved?: Deployment
+  /** The problem that keeps setup from completing, which stops every Source. */
   problem?: SetupProblem
-  feishuProblem?: SetupProblem
+  /** Why a Source instance's account did not resolve though the rest of setup went on, by instance id; that instance is paused. */
+  readonly problems: Record<string, SetupProblem> = {}
+  /** Why the Feishu bot is unavailable even though the Feishu Source names a CLI. */
+  get feishuProblem(): SetupProblem | undefined { return this.problems.feishu }
   /** PATH with the worker shim directory removed so the host's own CLI calls invoke the real binaries. */
   private readonly path: string
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
@@ -41,7 +45,7 @@ export class Setup {
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
-  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
+  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`problems` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
     catch (error) {
@@ -52,7 +56,7 @@ export class Setup {
   }
   /** Trigger a restart to re-run setup, refusing if setup and Feishu are already healthy so running assignments are not interrupted. */
   check(): void {
-    if (this.configured() && !this.feishuProblem) throw new UserError('setupComplete')
+    if (this.configured() && !Object.keys(this.problems).length) throw new UserError('setupComplete')
     this.restart()
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
@@ -79,7 +83,7 @@ export class Setup {
     const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
-      this.feishuProblem = error.problem
+      this.problems.feishu = error.problem
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })

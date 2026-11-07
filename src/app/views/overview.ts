@@ -33,9 +33,9 @@ export function evalsHealth(store: Store, now = Date.now()): Health {
 }
 /**
  * Builds the operator overview: active system problems, tickets awaiting human action, executor load, and 24-hour trigger flow.
- * @param setup - Setup problem to surface first (where setup stopped, or a Source paused by setup).
+ * @param setup - Setup problems to surface first: where setup stopped, then each Source instance setup paused.
  */
-export function overview(host: ViewHost, health: HealthMap, policyVersionValue: string, load: ExecutorLoad, setup?: SetupProblem) {
+export function overview(host: ViewHost, health: HealthMap, policyVersionValue: string, load: ExecutorLoad, setup: readonly SetupProblem[] = []) {
   const { store, sources } = host
   const view = snapshot(host)
   const settings = store.settings()
@@ -44,9 +44,9 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
   const instances = sources.instances()
   const running = instances.filter(instance => instance.enabled && instance.installed).map(instance => sourceHealth(sources, instance, health))
   // Exclude source-owned and policy-sync health entries so only core runtime errors surface as `runtime-error`.
-  const sourceParts = new Set(instances.flatMap(instance => sources.kind(instance.kind)?.health ?? []))
+  const sourceParts = new Set(instances.flatMap(instance => sources.healthNames(instance.id)))
   const problems = [
-    ...(setup ? [{ kind: 'setup' as const, ...setup }] : []),
+    ...setup.map(problem => ({ kind: 'setup' as const, ...problem })),
     ...(running.length ? [] : [{ kind: 'no-source' as const }]),
     // Only allowed senders can originate work, so empty allowlists mean no request can ever become a ticket.
     ...(anyoneAllowed(settings) ? [] : [{ kind: 'no-allowed' as const }]),

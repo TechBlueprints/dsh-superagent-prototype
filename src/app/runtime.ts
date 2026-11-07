@@ -158,7 +158,8 @@ export class Runtime extends Service implements SourceHost {
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
-        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
+        get setupProblem() { return setup.problem }, get setupProblems() { return setup.problems },
+        get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
@@ -180,6 +181,8 @@ export class Runtime extends Service implements SourceHost {
   get setupProblem(): SetupProblem | undefined { return this.setup.problem }
   /** Why the Feishu bot is unavailable even though the Feishu Source configures a CLI. */
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
+  /** Why setup left each Source instance's account out while the rest went on, by instance id. */
+  get setupProblems(): Readonly<Record<string, SetupProblem>> { return this.setup.problems }
   links(): LinkTarget {
     const resolved = this.setup.configured() ? this.setup.deployment : undefined
     const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
@@ -222,6 +225,7 @@ export class Runtime extends Service implements SourceHost {
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
+      get setupProblems() { return setup.problems },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }

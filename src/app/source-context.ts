@@ -18,8 +18,10 @@ export interface SourceContextDeps {
   readonly deployment: Deployment
   readonly ready: Promise<void>
   configured(): boolean
-  /** Setup problem whose `place` matches the Source kind receives it on `context.problem`. */
+  /** Setup problem whose `place` matches the Source instance receives it on `context.problem`. */
   readonly setupProblem?: SetupProblem | undefined
+  /** Why setup left a Source instance's account out, by instance id. */
+  readonly setupProblems?: Readonly<Record<string, SetupProblem>> | undefined
   /** Why setup found no Feishu bot even though the Feishu Source names a CLI. */
   readonly feishuProblem?: SetupProblem | undefined
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
@@ -40,7 +42,9 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     commands: deps.commands,
     ready: deps.ready,
     configured: () => deps.configured(),
-    get problem() { return [deps.feishuProblem, deps.setupProblem].find(problem => problem?.place === instance) },
+    get problem() {
+      return [deps.setupProblems?.[instance], deps.feishuProblem, deps.setupProblem].find(problem => problem?.place === instance)
+    },
     config: <C extends Record<string, unknown>>(id = instance) => {
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined

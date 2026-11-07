@@ -99,3 +99,14 @@ describe('setup', () => {
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
   })
 })
+describe('setup problems', () => {
+  it('place a Source problem on the instance whose check failed, and name the forge the values name', async () => {
+    const { SetupError } = await import('../src/setup.ts')
+    expect(new SetupError('agentCliUnset').problem).toEqual({ place: 'github', code: 'agentCliUnset', values: {}, detail: 'The agent GitHub CLI is not set.' })
+    expect(new SetupError('agentCliUnset', { forge: 'Gitea' }, 'gitea-home').problem)
+      .toEqual({ place: 'gitea-home', code: 'agentCliUnset', values: { forge: 'Gitea' }, detail: 'The agent Gitea CLI is not set.' })
+    // A deployment problem stays on the Deployment settings whichever instance found it.
+    expect(new SetupError('gitTooOld', {}, 'github-corp').place).toBe('deployment')
+    expect(new SetupError('repositoryUnset').at('github-corp').problem.place).toBe('github-corp')
+  })
+})

@@ -119,11 +119,11 @@ it('reads the state every second after a setup check, until dsh-superagent stopp
   const second = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(1000) }); await settle() }
   server.down = true
   await second()
-  expect(text()).toContain(zh['setup.agentCliUnset'])
+  expect(text()).toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
   server.down = false
   server.setup = { ...server.setup, problem: null }
   await second()
-  expect(text()).not.toContain(zh['setup.agentCliUnset'])
+  expect(text()).not.toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
   // Once it answers, the state is read every five seconds again.
   const reads = server.requests.filter(request => request.path === 'state').length
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) }); await settle()

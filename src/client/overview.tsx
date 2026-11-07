@@ -25,9 +25,15 @@ function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () =
   const worded = (text: string) => <p className="dt-error">{text}</p>
   switch (problem.kind) {
     // A failed Feishu bot check pauses only the Feishu Source; other setup problems halt the entire service.
-    case 'setup': return row(t(problem.place === 'feishu' ? 'problemSetupFeishu' : 'problemSetup'), <p className="dt-error"><SetupMessage
-      problem={problem} /></p>,
-      setupPage(problem.place), t(`problemSetupFix.${problem.place}`), <CheckSetupButton />)
+    case 'setup': {
+      // The deployment, GitHub and Feishu places have their own words; any other Source instance is named by its id.
+      const named = ['deployment', 'github', 'feishu'] as const
+      const place = named.find(item => item === problem.place) ?? 'source'
+      const title = problem.place === 'feishu' ? t('problemSetupFeishu') : place === 'source' ? t('problemSetupSource', { source: problem.place })
+        : t('problemSetup')
+      return row(title, <p className="dt-error"><SetupMessage problem={problem} /></p>,
+        setupPage(problem.place), t(`problemSetupFix.${place}`, { source: problem.place }), <CheckSetupButton />)
+    }
     case 'no-source': return row(t('problemNoSource'), undefined, settingsRoute('source'), undefined, go(t('actionOpenSources'),
       settingsRoute('source')))
     case 'no-allowed': return row(t('problemNoAllowed'), undefined, settingsRoute('eval'), undefined, go(t('actionAddAllowed'),
