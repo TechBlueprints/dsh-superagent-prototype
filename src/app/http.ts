@@ -100,8 +100,18 @@ function setupView(runtime: HttpHost) {
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
     problems: runtime.setupProblems,
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    accounts: resolved ? accountsView(resolved) : null,
   }
+}
+/**
+ * The resolved accounts: every forge Source instance's repository and agent account, and the Feishu bot. `repository` and
+ * `agent` name the first forge's (the GitHub Source's when it resolved), as the panel and the service script read them.
+ */
+function accountsView(resolved: Deployment) {
+  const forges = Object.values(resolved.forges).sort((a, b) => a.id === 'github' ? -1 : b.id === 'github' ? 1 : a.id.localeCompare(b.id))
+    .map(({ id, kind, host, repository, web, login }) => ({ id, kind, host, repository, web, agent: login }))
+  const feishu = resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null
+  return { repository: forges[0]?.repository ?? '', agent: forges[0]?.agent ?? '', forges, feishu }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
 export function stateView(runtime: HttpHost) {

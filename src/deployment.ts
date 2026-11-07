@@ -7,7 +7,7 @@ import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
-import { SetupError } from './setup.ts'
+import { SetupError, type SetupCode, type SetupProblem } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
@@ -42,20 +42,67 @@ export function machineOf(config: DeploymentConfig): Machine {
   return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
+/** A forge host name, optionally with a port, such as github.com or git.example.com:8443. */
+const HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?$/
 export const GithubAccountsSchema = z.object({
+  host: z.string().trim().toLowerCase().regex(HOST, 'a host name such as github.com').default('github.com'),
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
-/** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+/** The part of each Source kind's configuration that deployment setup reads, by Source kind. */
+const SETUP_SCHEMAS = { github: GithubAccountsSchema, feishu: FeishuBotSchema } as const
+/** Source configuration keys, by Source kind, that affect deployment setup and trigger a restart when changed. */
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(Object.entries(SETUP_SCHEMAS)
+  .map(([kind, schema]) => [kind, Object.keys(schema.shape)]))
+/** The setup fields of a stored configuration of `kind` with their defaults, so a default left out equals one written. */
+export function setupValues(kind: string, config: unknown): Record<string, unknown> {
+  const schema = (SETUP_SCHEMAS as Record<string, z.ZodObject>)[kind]
+  const parsed = schema?.safeParse(config ?? {})
+  return parsed?.success ? parsed.data : (config ?? {}) as Record<string, unknown>
+}
+/** Source kinds whose instances are forges: each enabled instance resolves to a `ForgeAccount`. */
+export const FORGE_KINDS = ['github'] as const
+export type ForgeKind = typeof FORGE_KINDS[number]
 
-export interface Deployment extends Machine {
+/**
+ * The agent's account on one forge repository, which setup resolved for one forge Source instance (`id`): the forge's web,
+ * API and clone addresses, the agent's login and commit email there, its CLI (which workers run as `shim`), and how git
+ * gets the account's credential for `host`.
+ */
+export interface ForgeAccount {
+  id: string
+  kind: ForgeKind
+  /** Host name, with a port when it is not the default, such as github.com. */
+  host: string
+  /** owner/name, as the forge names it now. */
   repository: string
-  github: { cli: string; login: string; noreply: string }
+  web: string
+  api: string
+  cloneUrl: string
+  login: string
+  commitEmail: string
+  /** The resolved executable of the agent's CLI on this forge. */
+  cli: string
+  shim: 'gh'
+  credential: { helper: 'gh' }
+}
+export interface Deployment extends Machine {
+  /** The resolved forge Source instances, by instance id. */
+  forges: Record<string, ForgeAccount>
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+/** The first forge account of a kind, by instance id (the kind's own instance sorts first among its ids). */
+export function forgeOfKind(deployment: Pick<Deployment, 'forges'>, kind: ForgeKind): ForgeAccount | undefined {
+  return Object.values(deployment.forges).filter(account => account.kind === kind).sort((a, b) => a.id === kind ? -1 : b.id === kind ? 1
+    : a.id.localeCompare(b.id))[0]
+}
+/** Web, API and clone addresses of a GitHub host: github.com, or a GitHub Enterprise Server. */
+export function githubAddresses(host: string, repository: string): Pick<ForgeAccount, 'web' | 'api' | 'cloneUrl'> {
+  const web = `https://${host}`
+  return { web, api: host === 'github.com' ? 'https://api.github.com' : `${web}/api/v3`, cloneUrl: `${web}/${repository}.git` }
+}
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -83,26 +130,72 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   const result = schema.safeParse(value)
   return result.success ? result.data : undefined
 }
-/** Verify the agent's GitHub CLI identity and push access to the configured repository. */
-export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+/** gh's flag naming a GitHub Enterprise Server host; github.com is gh's default host, whose calls name none. */
+export const hostFlag = (host: string): string[] => host === 'github.com' ? [] : ['--hostname', host]
+/**
+ * Verify the agent's GitHub CLI identity and push access to the repository a GitHub Source instance names, on github.com
+ * or the GitHub Enterprise Server host it names.
+ * @throws SetupError placed on instance `id`.
+ */
+export async function resolveGithub(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? '', id = 'github'): Promise<ForgeAccount> {
+  const fail = (code: SetupCode, values: Record<string, string> = {}): never => { throw new SetupError(code, values, id) }
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
-  const remote = accounts.repository
-  if (!remote) throw new SetupError('repositoryUnset')
-  if (!accounts.cli) throw new SetupError('agentCliUnset')
-  let cli: string
-  try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
-  const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
-  const agent = parsed(GithubUser, text)
-  if (!agent) throw new SetupError('agentCliNoAccount')
+  const { host, repository: remote } = accounts
+  if (!remote) fail('repositoryUnset')
+  if (!accounts.cli) fail('agentCliUnset')
+  let cli = ''
+  try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { fail('agentCliMissing', { output: reason(error) }) }
+  const text = await probe([cli, 'api', 'user', ...hostFlag(host)]).catch((error: unknown) => fail('agentCliSignedOut', { output: reason(error) }))
+  const agent = parsed(GithubUser, text) ?? fail('agentCliNoAccount')
   // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
-  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
-    throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
-  }))
-  if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
+  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}', ...hostFlag(host)])
+    .catch((error: unknown) => fail('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }))) ?? fail('repositoryUnreported', { repository: remote })
   const repository = access.name
-  if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  if (access.push !== true) fail('repositoryReadOnly', { account: agent.login, repository })
+  return { id, kind: 'github', host, repository, ...githubAddresses(host, repository), login: agent.login,
+    commitEmail: `${agent.id}+${agent.login}@users.noreply.${host}`, cli, shim: 'gh', credential: { helper: 'gh' } }
+}
+/** A forge Source instance setup resolves: its id, kind and stored configuration. */
+export interface ForgeInstance { id: string; kind: ForgeKind; config: unknown }
+/**
+ * The forge Source instances setup resolves: every enabled one, or, when none is on, the kinds' own instances, as setup has
+ * always read the GitHub Source's accounts whether it was on or not.
+ */
+export function forgeInstances(settings: { sources: Record<string, { enabled: boolean; kind?: string | undefined; config: unknown }> }): ForgeInstance[] {
+  const kinds = new Set<string>(FORGE_KINDS)
+  const stored = Object.entries(settings.sources).flatMap(([id, value]) => kinds.has(value.kind ?? id)
+    ? [{ id, kind: (value.kind ?? id) as ForgeKind, config: value.config, enabled: value.enabled }] : [])
+  const own = FORGE_KINDS.filter(kind => !settings.sources[kind]).map(kind => ({ id: kind, kind, config: {}, enabled: true }))
+  const all = [...own, ...stored].sort((a, b) => a.id.localeCompare(b.id))
+  const enabled = all.filter(instance => instance.enabled)
+  return (enabled.length ? enabled : all.filter(instance => instance.id === instance.kind)).map(({ id, kind, config }) => ({ id, kind, config }))
+}
+/** Resolves one forge Source instance by its kind. */
+export async function resolveForge(machine: Machine, instance: ForgeInstance, probe: Probe, path = process.env.PATH ?? ''): Promise<ForgeAccount> {
+  return resolveGithub(machine, instance.config, probe, path, instance.id)
+}
+/**
+ * Resolves each forge Source instance, collecting each failed one's problem by instance id, and refuses two instances of a kind
+ * that name different agent CLIs, since workers run one CLI per kind.
+ */
+export async function resolveForges(machine: Machine, instances: readonly ForgeInstance[], probe: Probe, path = process.env.PATH ?? ''):
+  Promise<{ forges: Record<string, ForgeAccount>; problems: Record<string, SetupProblem> }> {
+  const forges: Record<string, ForgeAccount> = {}, problems: Record<string, SetupProblem> = {}
+  for (const instance of instances) {
+    try { forges[instance.id] = await resolveForge(machine, instance, probe, path) }
+    catch (error) { if (!(error instanceof SetupError)) throw error; problems[instance.id] = error.problem }
+  }
+  for (const kind of FORGE_KINDS) {
+    const first = forgeOfKind({ forges }, kind)
+    for (const account of Object.values(forges)) {
+      if (!first || account.kind !== kind || account.cli === first.cli) continue
+      delete forges[account.id]
+      problems[account.id] = new SetupError('forgeCliDiffers', { source: account.id, cli: account.cli, other: first.id, otherCli: first.cli,
+        shim: first.shim, ...kind === 'github' ? {} : { forge: 'Gitea' } }, account.id).problem
+    }
+  }
+  return { forges, problems }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

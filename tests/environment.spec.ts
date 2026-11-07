@@ -8,7 +8,7 @@ import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-
 import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testForge } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
@@ -26,7 +26,7 @@ describe('worker shims', () => {
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
     const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper }, feishu: undefined }), [])
+    await writeEnvironment(testDeployment({ stateDir: dir, forge: { cli: wrapper }, feishu: undefined }), [])
     const bin = workerBin(dir)
     const path = [bin, join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':')
     const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
@@ -41,7 +41,7 @@ describe('worker shims', () => {
   it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
     const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
     const base = testDeployment()
-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
+    await writeEnvironment(testDeployment({ stateDir: dir, forge: { cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
     const bin = workerBin(dir)
     expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
     expect(readdirSync(bin)).not.toContain('git')
@@ -76,7 +76,7 @@ describe('agent git configuration', () => {
     const home = join(dir, 'home'); mkdirSync(home)
     // Operator configuration that rewrites HTTPS to SSH, enables commit signing, and sets a credential helper.
     writeFileSync(join(home, '.gitconfig'), '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n[commit]\n\tgpgsign = true\n[credential]\n\thelper = osxkeychain\n')
-    const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: '/opt/agent tools/gh' } })
+    const deployment = testDeployment({ stateDir: dir, forge: { cli: '/opt/agent tools/gh' } })
     await writeEnvironment(deployment, [])
     // Operator identity variables and git's fallback from the OS username must not apply to worker commits.
     const env = workerEnv({ PATH: process.env.PATH, HOME: home, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.abbrev', GIT_CONFIG_VALUE_0: '12', GIT_AUTHOR_NAME: 'Operator', GIT_COMMITTER_EMAIL: 'operator@example.com', ...agentVariables(dir) })
@@ -96,11 +96,28 @@ describe('agent git configuration', () => {
   })
 })
 
+it('gives each forge host its account\'s credential helper and fetches its SSH remotes over HTTPS, one block per host', async () => {
+  const forges = { github: testForge(), 'github-corp': testForge({ id: 'github-corp', host: 'ghe.example.com', repository: 'corp/app', web: 'https://ghe.example.com',
+    api: 'https://ghe.example.com/api/v3' }), 'github-tools': testForge({ id: 'github-tools', repository: 'acme/tools' }) }
+  await writeEnvironment(testDeployment({ stateDir: dir, forges, feishu: undefined }), ['personal-gh'])
+  const config = readFileSync(workerGitConfig(dir), 'utf8')
+  expect(config.match(/^\[credential "[^"]+"\]$/gm)).toEqual(['[credential "https://ghe.example.com"]', '[credential "https://github.com"]'])
+  expect(config).toContain('[url "https://ghe.example.com/"]\n\tinsteadOf = git@ghe.example.com:\n\tinsteadOf = ssh://git@ghe.example.com/')
+  const env = workerEnv({ PATH: process.env.PATH, HOME: dir, ...agentVariables(dir) })
+  await exec('git', ['init', '-q', 'repo'], { cwd: dir, env })
+  await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@ghe.example.com:corp/app.git'], { cwd: dir, env })
+  expect((await exec('git', ['-C', 'repo', 'remote', 'get-url', '--push', 'origin'], { cwd: dir, env })).stdout.trim()).toBe('https://ghe.example.com/corp/app.git')
+  // With accounts on several hosts, a blocked command names each.
+  await expect(exec(join(workerBin(dir), 'personal-gh'), [])).rejects.toMatchObject({ stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot on ghe.example.com; gh, which acts as agent-bot on github.com.\n' })
+  // Ambient forge selections never reach the agent's CLIs.
+  expect(agentVariables(dir)).toMatchObject({ GH_HOST: undefined, GH_REPO: undefined, GH_ENTERPRISE_TOKEN: undefined, GITEA_TOKEN: undefined })
+})
+
 it('fails instead of asking the operator\'s askpass helpers when the agent\'s credential helper has no answer', async () => {
   const log = join(dir, 'asked')
   const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)
   const agent = program(join(dir, 'real', 'gh'), 'exit 0')
-  const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: agent } })
+  const deployment = testDeployment({ stateDir: dir, forge: { cli: agent } })
   await writeEnvironment(deployment, [])
   const env = workerEnv({ PATH: process.env.PATH, HOME: dir, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass, ...agentVariables(dir) })
   await exec('git', ['init', '-q', 'repo'], { cwd: dir, env })

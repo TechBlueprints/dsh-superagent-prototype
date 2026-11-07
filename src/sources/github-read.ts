@@ -1,7 +1,8 @@
 /** Read-only GitHub repository, conversation, and CI check inspection for assessments and workers. */
 import { z } from 'zod'
 import type { ThreadFact } from '../core/index.ts'
-import { validItems, type Commands, type Tally } from '../infra/commands.ts'
+import { validItems, type Tally } from '../infra/commands.ts'
+import { githubClient, type GithubClient } from './github-client.ts'
 import { CommentSchema, IssueSchema, isHumanLogin, reviewPlace, type GithubComment } from './github-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
 
@@ -45,7 +46,7 @@ export function ciFact(counts: { failed: number; running: number }): ThreadFact 
 }
 
 /** Reads a non-hidden file or directory listing from the repository's default branch via the GitHub API; hidden entries and `node_modules` are rejected. */
-export async function readRepositoryPath(commands: Commands, path: string, kind: 'file' | 'directory'): Promise<string> {
+export async function readRepositoryPath(commands: GithubClient, path: string, kind: 'file' | 'directory'): Promise<string> {
   const parts = path.split('/').filter(part => part && part !== '.')
   if (parts.some(part => part === '..' || part.startsWith('.') || part === 'node_modules')) throw new Error('Only non-hidden repository source paths are available')
   const resource = `contents/${parts.map(encodeURIComponent).join('/')}`
@@ -57,7 +58,7 @@ export async function readRepositoryPath(commands: Commands, path: string, kind:
 }
 
 /** Reads check runs and commit statuses for a commit without emitting a trigger. */
-export async function pullChecks(commands: Commands, head: string, tally?: Tally): Promise<CiSnapshot> {
+export async function pullChecks(commands: GithubClient, head: string, tally?: Tally): Promise<CiSnapshot> {
   const page = z.looseObject({ check_runs: z.array(z.unknown()) })
   const pages = await commands.api(z.array(page), `commits/${head}/check-runs?per_page=100`, '--paginate', '--slurp')
   const runs = validItems(CheckSchema, pages.flatMap(page => page.check_runs), tally)
@@ -82,7 +83,7 @@ const DescriptionSchema = IssueSchema.extend({
   labels: z.array(z.looseObject({ name: z.string() })).nullish(), draft: z.boolean().nullish(), merged: z.boolean().nullish(),
   head: z.looseObject({ ref: z.string() }).nullish(), base: z.looseObject({ ref: z.string() }).nullish(),
 })
-async function reviewThread(commands: Commands, number: number, comment: number, tally?: Tally): Promise<GithubComment[]> {
+async function reviewThread(commands: GithubClient, number: number, comment: number, tally?: Tally): Promise<GithubComment[]> {
   const comments = await commands.pages(CommentSchema, `pulls/${number}/comments?per_page=100`, tally)
   const root = comments.find(item => item.id === comment)?.in_reply_to_id ?? comment
   return comments.filter(item => item.id === root || item.in_reply_to_id === root)
@@ -99,7 +100,7 @@ function threadMessages(thread: GithubComment[], id: (comment: GithubComment) =>
  * Reads an Issue or PR, a page of its comments or reviews, a review thread, or a CI snapshot as model-facing
  * `{ id, from, at, text, reply_to?, path?, line?, url }` messages rather than raw GitHub API records.
  */
-export async function readGithub(commands: Commands, resource: string): Promise<unknown> {
+export async function readGithub(commands: GithubClient, resource: string): Promise<unknown> {
   // A commit's CI, such as the default branch's, which no PR names.
   const commit = /^github\/commits\/([0-9a-f]{7,40})\/checks$/.exec(resource)
   if (commit) return pullChecks(commands, commit[1]!)
@@ -140,7 +141,7 @@ export async function readGithub(commands: Commands, resource: string): Promise<
     ...listed.length === 20 ? { next_resource: `github/${kind}/${number}/${section}/${Number(page) + 1}` } : {} }
 }
 /** Reads one page of an Issue or PR conversation (with the Issue/PR description first on page 1), using comment URLs as message IDs. */
-async function conversationPage(commands: Commands, number: number, page: number) {
+async function conversationPage(commands: GithubClient, number: number, page: number) {
   const messages: ContextMessage[] = []
   if (page === 1) {
     const issue = await commands.api(IssueSchema, `issues/${number}`)
@@ -158,7 +159,8 @@ async function conversationPage(commands: Commands, number: number, page: number
  */
 export const githubThreadContext: ThreadContext<unknown> = {
   messageId: trigger => trigger.url ?? '',
-  read: async (commands, trigger, part, cursor) => {
+  read: async (cli, trigger, part, cursor) => {
+    const commands = githubClient(cli, trigger.source)
     // The default branch's CI has no conversation; its Trigger is its context.
     if (typeof trigger.meta.branch === 'string') {
       const message = { id: trigger.url ?? trigger.id, from: 'CI', at: trigger.at, text: trigger.text, bot: true as const }

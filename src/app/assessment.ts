@@ -9,6 +9,8 @@ import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import { admissionContext } from '../sources/admission-context.ts'
 import { readRepositoryPath } from '../sources/github-read.ts'
+import { githubClient } from '../sources/github-client.ts'
+import { forgeOfKind } from '../deployment.ts'
 import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
@@ -263,7 +265,10 @@ export class MasterAssessor implements Assessor {
         body = JSON.stringify({ images: references, next_read: next, ...result.body })
       }
       else {
-        body = await readRepositoryPath(commands, read.path!, read.resource === 'directory' ? 'directory' : 'file')
+        // The repository of the forge the candidate came from, else the first GitHub Source's.
+        const forge = this.host.deployment.forges[trigger.source] ?? forgeOfKind(this.host.deployment, 'github')
+        if (!forge) throw new Error('No forge Source has a repository to read')
+        body = await readRepositoryPath(githubClient(commands, forge.id), read.path!, read.resource === 'directory' ? 'directory' : 'file')
       }
       snapshots.set(cacheKey, body)
       return textPage(read.resource, body, read.offset, 4000)

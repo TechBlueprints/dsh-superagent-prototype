@@ -4,14 +4,20 @@ import { key, type ChannelRef, type Trigger } from '../core/index.ts'
 import { escapeRegExp, sameName } from '../infra/text.ts'
 
 export const SOURCE = 'github'
+const GITHUB_COM = { web: 'https://github.com', api: 'https://api.github.com' }
 /** GitHub reply address: issue/PR conversation, or a review thread when `url` points at a discussion comment. */
 export const githubChannel = (number: number, url?: string): ChannelRef =>
   ({ source: SOURCE, thread: `github:${number}`, address: { number: String(number), ...(url ? { url } : {}) } })
-export const githubPage = (repository: string, number: number, pr = false): string =>
-  `https://github.com/${repository}/${pr ? 'pull' : 'issues'}/${number}`
-/** Parses a web or API URL for an Issue, PR, or review comment in `repository`; returns undefined for other URLs or repositories. */
-export function githubAddress(url: string, repository: string): { number: number; pr: boolean; discussion?: number } | undefined {
-  const address = /^https:\/\/(?:api\.github\.com\/repos|github\.com)\/([^/]+\/[^/]+)\/(issues|pulls?)\/(\d+)\/?(?:#discussion_r(\d+)|#[\w-]*)?$/i
+export const githubPage = (repository: string, number: number, pr = false, web = 'https://github.com'): string =>
+  `${web}/${repository}/${pr ? 'pull' : 'issues'}/${number}`
+/**
+ * Parses a web or API URL for an Issue, PR, or review comment in `repository` on the forge whose web and API addresses
+ * `host` names (github.com by default); returns undefined for other URLs, hosts or repositories.
+ */
+export function githubAddress(url: string, repository: string, host: { web: string; api: string } = GITHUB_COM):
+  { number: number; pr: boolean; discussion?: number } | undefined {
+  const bases = [`${escapeRegExp(host.api)}\\/repos`, escapeRegExp(host.web)].join('|')
+  const address = new RegExp(`^(?:${bases})\\/([^/]+\\/[^/]+)\\/(issues|pulls?)\\/(\\d+)\\/?(?:#discussion_r(\\d+)|#[\\w-]*)?$`, 'i')
   const match = address.exec(url)
   if (!match || !sameName(match[1]!, repository)) return undefined
   return { number: Number(match[3]), pr: match[2]!.toLowerCase() !== 'issues', ...match[4] ? { discussion: Number(match[4]) } : {} }

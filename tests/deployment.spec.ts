@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, forgeInstances, machineOf, resolveForges, resolveGithub, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -58,16 +58,37 @@ describe('configuration schema', () => {
 
 describe('setup', () => {
   it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
-    const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
-    expect(deployment).toMatchObject({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })
-    expect(deployment.github).toEqual({ cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' })
-    expect(deployment).not.toHaveProperty('feishu')
+    const account = await resolveGithub(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
+    expect(account).toEqual({ id: 'github', kind: 'github', host: 'github.com', repository: 'acme/widgets', web: 'https://github.com',
+      api: 'https://api.github.com', cloneUrl: 'https://github.com/acme/widgets.git', login: 'Agent-Bot', commitEmail: '7+Agent-Bot@users.noreply.github.com',
+      cli: join(dir, 'bin', 'gh'), shim: 'gh', credential: { helper: 'gh' } })
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
-    expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
+    expect((await resolveGithub(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
+  })
+  it('reads a GitHub Enterprise Server account with gh --hostname, and its addresses on that host', async () => {
+    const enterprise = program(join(dir, 'bin', 'gh-corp'), `case "$*" in\n  "api user --hostname ghe.example.com") echo '{"login":"agent","id":9}' ;;\n  "api repos/corp/app --jq {name: .full_name, push: .permissions.push} --hostname ghe.example.com") echo '{"name":"corp/app","push":true}' ;;\n  *) exit 1 ;;\nesac`)
+    expect(await resolveGithub(machine(), { host: 'GHE.example.com', repository: 'corp/app', cli: enterprise }, probe, path, 'github-corp')).toEqual({
+      id: 'github-corp', kind: 'github', host: 'ghe.example.com', repository: 'corp/app', web: 'https://ghe.example.com', api: 'https://ghe.example.com/api/v3',
+      cloneUrl: 'https://ghe.example.com/corp/app.git', login: 'agent', commitEmail: '9+agent@users.noreply.ghe.example.com', cli: enterprise, shim: 'gh',
+      credential: { helper: 'gh' } })
+  })
+  it('resolves each enabled forge instance on its own, and refuses a second GitHub CLI', async () => {
+    const settings = { sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
+      'github-tools': { enabled: true, kind: 'github', config: { repository: 'acme/tools', cli: 'gh' } },
+      'github-off': { enabled: false, kind: 'github', config: {} },
+      'github-other': { enabled: true, kind: 'github', config: { repository: 'acme/widgets', cli: gh(join(dir, 'bin', 'gh-second'), 'Agent-Bot') } },
+      'github-broken': { enabled: true, kind: 'github', config: { cli: 'gh' } } } }
+    expect(forgeInstances(settings).map(instance => instance.id)).toEqual(['github', 'github-broken', 'github-other', 'github-tools'])
+    const { forges, problems } = await resolveForges(machine(), forgeInstances(settings), probe, path)
+    expect(Object.keys(forges).sort()).toEqual(['github', 'github-tools'])
+    expect(problems).toEqual({ 'github-broken': setupError('github-broken', 'repositoryUnset'),
+      'github-other': setupError('github-other', 'forgeCliDiffers', { source: 'github-other', other: 'github', shim: 'gh' }) })
+    // With no forge on, setup reads the GitHub Source's accounts as it always has.
+    expect(forgeInstances({ sources: { github: { enabled: false, config: {} } } }).map(instance => instance.id)).toEqual(['github'])
   })
   it('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
-      expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))
+      expect(resolveGithub(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))
     const repository = 'acme/widgets'
     await needs('github', 'repositoryUnset', {}, { cli: 'gh' })
     await needs('github', 'agentCliUnset', {}, { repository })

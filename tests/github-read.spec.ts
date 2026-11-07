@@ -2,18 +2,21 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { readGithub, pullChecks } from '../src/sources/github-read.ts'
+import { GithubClient } from '../src/sources/github-client.ts'
 
-const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+const deployment = testDeployment()
+const cli = new Commands(() => deployment, {}, new AbortController().signal)
+const commands = new GithubClient(cli, deployment.forges.github!)
 afterEach(() => vi.restoreAllMocks())
 
 it('reads a bounded comment page and exposes the next page reference', async () => {
-  const gh = vi.spyOn(commands, 'gh').mockResolvedValue(Array.from({ length: 20 }, (_, id) => ({ id, body: 'comment' })))
+  const gh = vi.spyOn(cli, 'gh').mockResolvedValue(Array.from({ length: 20 }, (_, id) => ({ id, body: 'comment' })))
   expect(await readGithub(commands, 'github/issues/123/comments/2')).toMatchObject({ next_resource: 'github/issues/123/comments/3' })
-  expect(gh).toHaveBeenCalledWith(['api', 'repos/acme/widgets/issues/123/comments?per_page=20&page=2'])
+  expect(gh).toHaveBeenCalledWith(['api', 'repos/acme/widgets/issues/123/comments?per_page=20&page=2'], '/bin/false')
 })
 
 it('rejects unsupported or escaping paths without making a request', async () => {
-  const gh = vi.spyOn(commands, 'gh')
+  const gh = vi.spyOn(cli, 'gh')
   for (const resource of ['github/../outside', 'github/issues/1/reviews', 'github/pulls/1/checks/2', 'github/issues/1?repo=other']) {
     await expect(readGithub(commands, resource)).rejects.toThrow()
   }
@@ -21,7 +24,7 @@ it('rejects unsupported or escaping paths without making a request', async () =>
 })
 
 it('reads checks across pages and canonicalizes the latest status per context', async () => {
-  vi.spyOn(commands, 'gh').mockResolvedValue([{ check_runs: [{ name: 'z', status: 'completed', conclusion: 'success' }] }, { check_runs: [{ name: 'a', status: 'in_progress', conclusion: null }] }])
+  vi.spyOn(cli, 'gh').mockResolvedValue([{ check_runs: [{ name: 'z', status: 'completed', conclusion: 'success' }] }, { check_runs: [{ name: 'a', status: 'in_progress', conclusion: null }] }])
   vi.spyOn(commands, 'pages').mockResolvedValue([{ context: 'build', state: 'success' }, { context: 'build', state: 'failure' }])
   const result = await pullChecks(commands, 'abc')
   expect(result.checks.map((check: { name: string }) => check.name)).toEqual(['a', 'z'])
@@ -29,7 +32,7 @@ it('reads checks across pages and canonicalizes the latest status per context', 
 })
 
 it('reads any requested PR’s CI on demand without restricting the author', async () => {
-  const gh = vi.spyOn(commands, 'gh').mockResolvedValueOnce({ head: { sha: 'abc' }, user: { login: 'another-author' } }).mockResolvedValueOnce([{ check_runs: [] }])
+  const gh = vi.spyOn(cli, 'gh').mockResolvedValueOnce({ head: { sha: 'abc' }, user: { login: 'another-author' } }).mockResolvedValueOnce([{ check_runs: [] }])
   vi.spyOn(commands, 'pages').mockResolvedValue([])
   expect(await readGithub(commands, 'github/pulls/123/checks')).toEqual({ head: 'abc', checks: [], statuses: [] })
   expect(gh).toHaveBeenCalledTimes(2)
@@ -44,7 +47,7 @@ const reviewComment = (id: number, reply?: number) => ({ id, url: `https://api.g
   html_url: `https://github.com/acme/widgets/pull/9#discussion_r${id}`, author_association: 'MEMBER', reactions: { total_count: 0 },
   _links: { self: { href: 'x' } }, ...reply ? { in_reply_to_id: reply } : {} })
 it('reads a page of review comments as messages: id, author, time, text, the comment each answers, and the file and line', async () => {
-  vi.spyOn(commands, 'gh').mockResolvedValue([reviewComment(1), reviewComment(2, 1)])
+  vi.spyOn(cli, 'gh').mockResolvedValue([reviewComment(1), reviewComment(2, 1)])
   expect(await readGithub(commands, 'github/pulls/9/comments/1')).toEqual({ messages: [
     { id: '1', from: 'carol', at: '2026-09-09T00:00:01Z', text: 'comment 1', url: 'https://github.com/acme/widgets/pull/9#discussion_r1',
       path: 'src/render.ts', line: 43 },
@@ -60,7 +63,7 @@ it('reads a review thread from any of its comments, the first with its file, lin
   await expect(readGithub(commands, 'github/issues/9/thread/2')).rejects.toThrow('require a pull request')
 })
 it('reads an Issue or PR as its author, time, title, state, description and a PR\'s branches', async () => {
-  vi.spyOn(commands, 'gh').mockResolvedValue({ number: 9, id: 1, title: 'Fix the margin', state: 'open', body: 'Details', draft: true,
+  vi.spyOn(cli, 'gh').mockResolvedValue({ number: 9, id: 1, title: 'Fix the margin', state: 'open', body: 'Details', draft: true,
     user: { login: 'carol', type: 'User' }, created_at: '2026-09-09T00:00:00Z', html_url: 'https://github.com/acme/widgets/pull/9',
     head: { ref: 'agent/fix', sha: 'abc', repo: {} }, base: { ref: 'main' }, labels: [{ name: 'ui', color: 'fff' }], node_id: 'x', _links: {} })
   expect(await readGithub(commands, 'github/pulls/9')).toEqual({ number: 9, title: 'Fix the margin', state: 'open', draft: true, head: 'agent/fix',
