@@ -47,12 +47,13 @@ export interface SourceChannel<C> {
   /** Whether a reply may still go to `address`; without it, every address may receive replies. */
   allowed?(address: Record<string, string>, config: C): boolean
   /**
-   * Sends a message idempotently by ID; returns `'gone'` when the target conversation no longer accepts replies.
+   * Sends a message idempotently by ID through the Source instance `host.instance` (the Channel's `source`); returns
+   * `'gone'` when the target conversation no longer accepts replies.
    * @throws when delivery failed but may succeed on a later retry.
    */
-  send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
-  /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
-  link(address: Record<string, string>, links: ChannelLinks): ChannelLink
+  send(host: Pick<SourceContext, 'commands'> & { instance: string }, message: OutboundMessage): Promise<'sent' | 'gone'>
+  /** Returns the URL and label for `address` on instance `instance` (by default the kind's own); `url` is empty when `links` lack the required deployment info. */
+  link(address: Record<string, string>, links: ChannelLinks, instance?: string): ChannelLink
 }
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message can never authorize work on its own (at most an inferred candidate). */
 export interface ContextMessage {
@@ -83,8 +84,10 @@ export interface TriggerContext {
 }
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
-  /** Stable ID; a default instance with the same ID exists when none is stored. */
+  /** Stable ID; the kind's own instance has the same ID, and exists when none is stored. */
   kind: string
+  /** Whether further instances may name this kind (`settings.sources[<kind>-…] = { kind, … }`), such as one per repository. */
+  multiple?: true
   title: Localized
   description: Localized
   /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
@@ -100,8 +103,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
-  /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
-  find?(query: string): { threads: string[]; terms: string[] }
+  /** Maps a search query to candidate Thread keys of instance `instance` (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
+  find?(query: string, instance: string): { threads: string[]; terms: string[] }
   /** Returns the ID of the Trigger whose message this Trigger replies to, when derivable without a network read. */
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */

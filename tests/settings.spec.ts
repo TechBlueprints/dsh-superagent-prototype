@@ -99,3 +99,17 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   vi.mocked(Setup.prototype.configured).mockRestore()
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
+it('adds a further Source instance only of a kind that admits several, from the panel, and removes only further instances', async () => {
+  h = await startRuntime()
+  const { settings } = h.runtime
+  // Feishu admits one instance; a further one, an id of another kind, or one from a tool is refused before anything is saved.
+  await expect(settings.save('source:feishu-two', { enabled: true, kind: 'feishu', config: {} }, 0, 'panel'))
+    .rejects.toMatchObject({ code: 'sourceIdRefused' })
+  await expect(settings.save('source:other', { enabled: true, kind: 'missing', config: {} }, 0, 'panel'))
+    .rejects.toMatchObject({ code: 'sourceNotInstalled' })
+  await expect(settings.remove('github', 0)).rejects.toMatchObject({ code: 'sourceNotRemovable' })
+  await expect(settings.remove('github-gone', 0)).rejects.toMatchObject({ code: 'sourceNotRemovable' })
+  expect(h.runtime.store.settings().sources['feishu-two']).toBeUndefined()
+  const response = await h.api('DELETE', 'settings/source:github', { revision: 0 })
+  expect(response).toMatchObject({ status: 400, body: { code: 'sourceNotRemovable' } })
+})

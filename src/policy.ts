@@ -95,7 +95,9 @@ export const ExecutorConfigSchema = z.object({
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()
-export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+/** A stored Source instance; `kind` names its Source kind when the instance id is not the kind's own id (such as `github-corp` of kind `github`). */
+export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), kind: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(),
+  config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourceInstanceSchema).default({}),
