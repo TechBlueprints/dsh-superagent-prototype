@@ -62,8 +62,10 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
         <p className="dt-error" role="status"><SetupMessage problem={setup.problem} lead /></p><CheckSetupButton />
       </div>}
       {showAccounts && <Section title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
-        <KeyValues rows={[[t('deploymentRepository'), accounts?.repository ?? '—'],
-          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
+        <KeyValues rows={accounts && accounts.forges.length > 1
+          // With several forge Sources, one row each: its repository, account and host.
+          ? [...accounts.forges.map(forge => [forge.id, `${forge.repository} · @${forge.agent} · ${forge.host}`] as [string, string]), [t('deploymentFeishu'), feishu]]
+          : [[t('deploymentRepository'), accounts?.repository ?? '—'], [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
         <Hint>{t('deploymentAccountsWhere')}</Hint>
       </Section>}
       <Section title={t('deploymentMachine')}>

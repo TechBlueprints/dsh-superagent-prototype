@@ -118,6 +118,10 @@ export function ExecutionSettings() {
             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
               onChange={event => edit({ blockedCommands: event.target.value })} />
           </Field>
+          <Field label={t('defaultForge')} hint={t('defaultForgeHint')}>
+            <Input className="dt-mono" value={value.defaultForge} placeholder={t('defaultForgeNone')} spellCheck={false}
+              onChange={event => edit({ defaultForge: event.target.value.trim() })} />
+          </Field>
         </div>
       </Fields>
       <SaveBar {...draft} onDiscard={draft.discard} />

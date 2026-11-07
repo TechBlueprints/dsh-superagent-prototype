@@ -134,7 +134,7 @@ function sourceSettings(): SourceView[] {
       health: server.health[`sync:${kind.kind}`] }
     const policy = kind.policy && { fields: kind.policy.fields, explicit: kind.policy.explicit, ...kind.policy.rows
       ? { rows: kind.policy.rows(config) } : {}, ...sync ? { sync } : {} }
-    return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true,
+    return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true, multiple: !!kind.multiple, removable: false,
       value: { enabled: server.settings.sources[kind.kind]?.enabled ?? true, config },
         revision: server.revisions[`source:${kind.kind}`] ?? 0,
       restarts: SETUP_FIELDS[kind.kind] ?? [], fields: kind.fields, facts: kind.facts?.(resolved()) ?? {},
@@ -347,6 +347,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'DELETE settings/:block': { body: true, answer: ({ params: { block } }) => refuse(400, `${block} is a kind's own instance`) },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
+    // A new instance names its kind; as on the server, saving it restarts dsh-superagent.
+    const named = (body.value as { kind?: string } | undefined)?.kind
+    if (block.startsWith('source:') && !source && named) {
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [block.slice(7)]: body.value as never } }
+      return { restarting: true, revision: 1 }
+    }
     if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')

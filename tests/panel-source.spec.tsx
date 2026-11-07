@@ -63,7 +63,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await mount()
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
-  const cards = all('.dt-card')
+  const cards = all('.dt-card').filter(card => card.id.startsWith('dt-source-'))
   expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub'])
   const feishu = cards[0]!
   expect(feishu.textContent).toContain('接收的群')
@@ -283,4 +283,16 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
   expect(server.requests.filter(request => request.path === 'settings').length).toBeGreaterThan(reads)
   expect(field('智能体的 GitHub CLI').matches(':disabled')).toBe(false)
   expect(field<HTMLInputElement>('智能体的 GitHub CLI').value).toBe('/opt/bin/gh-agent')
+})
+
+it('adds another repository Source of a kind that admits several, switched off, named after its kind', async () => {
+  await mount()
+  await click(find(zh['tab.settings'], '[role="tab"]'))
+  await click(find(zh['term.source'], '.dt-settings-link'))
+  expect(text()).toContain(zh.sourceAdd)
+  const name = document.querySelector<HTMLInputElement>(`input[aria-label="${zh.sourceAddName}"]`)!
+  await type(name, 'Tools')
+  await click(zh.sourceAddButton.replace('{id}', 'github-tools'))
+  expect(server.requests.filter(request => request.method === 'PUT').at(-1)).toEqual({ path: 'settings/source:github-tools', method: 'PUT',
+    body: { value: { enabled: false, kind: 'github', config: {} }, revision: 0 } })
 })
