@@ -938,6 +938,7 @@ describe('the Executor\'s parts', () => {
     const ready = reportRelay({ ...ticket, attention: undefined } as unknown as Ticket, { state: 'ready', summary: 'Done',
       answers: 'tr9' })!
     expect(ready.id).toMatch(/^report:/)
-    expect(JSON.parse(ready.text)).toMatchObject({ kind: 'worker_report', ticket: { ticket_id: 't1' }, trigger_id: 'tr1', state: 'ready', answer_to: 'tr9', summary: 'Done' })
+    expect(JSON.parse(ready.text)).toMatchObject({ kind: 'worker_report', ticket: { ticket_id: 't1' }, trigger_id: 'tr1', state: 'ready', answer_to: 'tr9', summary: 'Done',
+      next_action: 'Nothing is sent yet: answer with orchestrator_reply purpose=answer trigger_id=tr9.' })
   })
 })
