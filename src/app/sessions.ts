@@ -44,6 +44,18 @@ export interface SessionsHost {
  */
 interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
 
+/** The order of a worker's session marker section: before every section DSH or a plugin registers (DSH's first is -1000). */
+export const SESSION_MARKER_ORDER = Number.MIN_SAFE_INTEGER
+/**
+ * The line that starts the system prompt of every Session dsh-superagent creates, which a model endpoint (such as a gateway
+ * that runs each Session as a conversation of its own) keys the Session by:
+ * `[dsh-superagent session role=<main|worker> ticket=<ticket id or -> name=<DSH_SUPERAGENT_NAME or ->]`. Values never hold
+ * spaces or brackets: ticket ids and short names are `[A-Za-z0-9_-]`, and `-` stands for none.
+ */
+export function sessionMarker(role: 'main' | 'worker', ticket?: Pick<Ticket, 'id' | 'execution'>): string {
+  const value = (text: string | undefined) => text && /^[\w.:-]+$/.test(text) ? text : '-'
+  return `[dsh-superagent session role=${role} ticket=${value(ticket?.id)} name=${value(ticket?.execution?.name)}]`
+}
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
 declare module '@deepseek-ai/cordis' {
@@ -240,12 +252,20 @@ export class Sessions {
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
     if (agent.status === 'idle') this.retryHealth.clear(agent.id)
     this.updateModelHealth()
+    // The first line of every Session's system prompt names the Session (`sessionMarker`): a worker's as its own section
+    // before every other, the main Session's as the first line of its complete prompt.
+    const marker = () => sessionMarker(master ? 'main' : 'worker', ticket && host.store.tickets.get(ticket.id))
+    if (!master) {
+      binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-session', order: SESSION_MARKER_ORDER, interpolate: false,
+        text: marker }))
+    }
     // Disable variable interpolation so literal ${{ ... }} expressions in team prompts are preserved.
     binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const head = master ? `${marker()}\n` : ''
+      return `${head}[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -317,7 +337,7 @@ export class Sessions {
     previous?.dispose()
     const disposers: (() => void)[] = []
     for (const [name, content] of this.host.prompts.skills(version.config)) {
-      const bundled = name === 'feishu' || name === 'github' ? bundledSkills[name] : undefined
+      const bundled = Object.hasOwn(bundledSkills, name) ? bundledSkills[name as keyof typeof bundledSkills] : undefined
       const body = version.config.skills[name] ?? ''
       const description = bundled?.description ?? (body.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagent operational skill.')
       disposers.push(scope.skills.register({ name: `${SKILL_PREFIX}${name}`, description, content, source: 'runtime',

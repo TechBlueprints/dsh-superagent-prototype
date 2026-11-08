@@ -74,7 +74,14 @@ export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), n
 const Weak = z.enum(['inferred', 'ignore'])
 export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
-export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
+/**
+ * Whose messages on an open ticket's Thread are that ticket's own follow-ups, which its worker decides: anyone's (`any`, the
+ * default when absent), or only those of senders on the Source's `allowed` list (`listed`), so another person's message reaches
+ * the ticket for context only and comes to the main Session as a candidate.
+ */
+export const FollowUpsSchema = z.enum(['any', 'listed'])
+export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}),
+  followUps: FollowUpsSchema.optional() }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
 export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
@@ -94,8 +101,12 @@ export const ExecutorConfigSchema = z.object({
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
+  /** The forge Source instance whose repository a Ticket from elsewhere (such as Feishu) works on, when several forges are on. */
+  defaultForge: z.string().regex(/^([a-z][a-z0-9-]*)?$/).default(''),
 }).strict()
-export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+/** A stored Source instance; `kind` names its Source kind when the instance id is not the kind's own id (such as `github-corp` of kind `github`). */
+export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), kind: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(),
+  config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourceInstanceSchema).default({}),
@@ -124,6 +135,15 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
   const bots = z.array(AllowedSchema).catch([]).parse(settings.policy.sources[actor.source]?.bots ?? [])
   return bots.find(entry => sameName(entry.id, actor.id))
 }
+/**
+ * Who sent a Trigger as the router reads it: the Source instance, the sender's account there, whether that account is on
+ * the Source's `allowed` list, and whether the Source counts the sender as a person.
+ */
+export const senderOf = (settings: Settings, trigger: Pick<Trigger, 'source' | 'actor' | 'human'>) =>
+  ({ source: trigger.source, id: trigger.actor.id, listed: !!allowedSender(settings, trigger.actor), human: trigger.human })
+/** Whether `actor`'s message on an open ticket's Thread is the ticket's own follow-up under its Source's `followUps`. */
+export const ownsFollowup = (settings: Settings, actor: ActorRef): boolean =>
+  settings.policy.sources[actor.source]?.followUps !== 'listed' || !!allowedSender(settings, actor)
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
 
@@ -202,14 +222,17 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const basis = { ...recorded, via: 'admission' as const, cell, ...trigger.addressed ? { addressed: trigger.addressed } : {} }
       // Check explicit admission cells before thread follow-ups so a thread's tickets never weaken an explicit request to a follow-up.
       if (admission === 'explicit') return { admissible: true, strength: 'explicit', basis }
-      // Direct-message threads belong to one sender (no follow-up for others), and inferred follow-ups require an accept mode other than off (when off, the table decides).
-      if (!(trigger.addressed === 'direct' && !allowed) && (allowed || mode !== 'off') && participating(thread, tickets)) {
+      // Direct-message threads belong to one sender (no follow-up for others), inferred follow-ups require an accept mode other than off (when off, the table decides),
+      // and a Source whose follow-ups are only listed senders' leaves another sender's message to the table.
+      if (!(trigger.addressed === 'direct' && !allowed) && (allowed || mode !== 'off') && ownsFollowup(settings, trigger.actor)
+        && participating(thread, tickets)) {
         return { admissible: true, strength: allowed ? 'explicit' : 'inferred', basis: { ...recorded, via: 'followup' } }
       }
       if (admission === 'inferred' && mode !== 'off') return { admissible: true, strength: 'inferred', basis: { ...basis, observation: { mode } } }
       return { admissible: false, reason: !allowed ? 'not_a_member' : receivable && admission === 'ignore' ? 'admission_ignored' : 'no_mention' }
     },
     admitsInferred: rules => mode === 'auto' && rules.length > 0 && rules.every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id)),
+    ownsFollowup: trigger => ownsFollowup(settings, trigger.actor),
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate

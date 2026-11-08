@@ -63,7 +63,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await mount()
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
-  const cards = all('.dt-card')
+  const cards = all('.dt-card').filter(card => card.id.startsWith('dt-source-'))
   expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub'])
   const feishu = cards[0]!
   expect(feishu.textContent).toContain('接收的群')
@@ -107,7 +107,7 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   await click(zh.discard)
   expect(github.textContent).toContain('当前账号 @agent-bot')
   await click([...github.querySelectorAll<HTMLElement>('[data-disclosure-row]')].find(row => row.textContent?.includes('高级'))!)
-  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', '轮询间隔 / 秒', '连续失败几次后报告异常'])
+  expect(labels()).toEqual(['监听的仓库', '智能体的 GitHub CLI', 'GitHub 主机', '轮询间隔 / 秒', '连续失败几次后报告异常'])
   expect(all('.dt-card')[0]!.textContent).toContain('当前机器人 Widgets Bot')
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), '/opt/bin/gh-agent')
   expect(github.textContent).toContain('保存会重启 dsh-superagent：2 个进行中的派工会中断，并带恢复说明重新开始。')
@@ -127,7 +127,7 @@ it('points a setup problem at the settings that fix it', async () => {
   Element.prototype.scrollIntoView = scroll
   await mount()
   expect(text()).toContain(zh.problemSetup)
-  expect(text()).toContain(zh['setup.agentCliUnset'])
+  expect(text()).toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
   // Nothing runs while setup waits, so the Executor says so instead of counting.
   expect(text()).toContain(zh.executorWaitingSetup)
   expect(all('.dt-stat').map(stat => stat.textContent)).not.toContain('执行中2 / 3')
@@ -223,13 +223,13 @@ it('shows a setup problem on its Source card within one read of the settings, wh
   at({ page: 'settings', query: { group: 'source' } })
   await mount()
   const card = () => document.getElementById('dt-source-github')!
-  expect(card().textContent).not.toContain(zh['setup.agentCliUnset'])
+  expect(card().textContent).not.toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
   server.setup = { ...server.setup, problem: problemOf('agentCliUnset') }
   // The settings are read every five seconds, as the state is; the Source settings do not read the Source status.
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) }); await settle()
   expect(server.requests.filter(request => request.path === 'settings')).toHaveLength(2)
   expect(server.requests.some(request => request.path === 'sources')).toBe(false)
-  expect(card().textContent).toContain(zh['setup.agentCliUnset'])
+  expect(card().textContent).toContain(zh['setup.agentCliUnset'].replaceAll('{forge}', 'GitHub'))
 })
 
 it('lists the messages a Source did not send in the last day under it, newest first, with why and where they belong', async () => {
@@ -283,4 +283,16 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
   expect(server.requests.filter(request => request.path === 'settings').length).toBeGreaterThan(reads)
   expect(field('智能体的 GitHub CLI').matches(':disabled')).toBe(false)
   expect(field<HTMLInputElement>('智能体的 GitHub CLI').value).toBe('/opt/bin/gh-agent')
+})
+
+it('adds another repository Source of a kind that admits several, switched off, named after its kind', async () => {
+  await mount()
+  await click(find(zh['tab.settings'], '[role="tab"]'))
+  await click(find(zh['term.source'], '.dt-settings-link'))
+  expect(text()).toContain(zh.sourceAdd)
+  const name = document.querySelector<HTMLInputElement>(`input[aria-label="${zh.sourceAddName}"]`)!
+  await type(name, 'Tools')
+  await click(zh.sourceAddButton.replace('{id}', 'github-tools'))
+  expect(server.requests.filter(request => request.method === 'PUT').at(-1)).toEqual({ path: 'settings/source:github-tools', method: 'PUT',
+    body: { value: { enabled: false, kind: 'github', config: {} }, revision: 0 } })
 })

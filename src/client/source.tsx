@@ -2,14 +2,14 @@
 import { useEffect, useState } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
 import { usePoll, type DroppedReply, type SourceStatusRow, type SourceView } from './api.ts'
-import { DisclosureRow, Dot, Icon, InfoTip, Switch, Tag } from './controls.tsx'
+import { Button, DisclosureRow, Dot, Icon, InfoTip, Input, Switch, Tag } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { usePanel, usePanelData } from './provider.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { actorName, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
-import { CheckSetupButton, Hint, LabelValue, LoadState, SetupMessage, StatusHead, When } from './widgets.tsx'
+import { CheckSetupButton, ConfirmButton, Hint, LabelValue, LoadState, SetupMessage, StatusHead, When } from './widgets.tsx'
 
 function SourceCard({ source }: { source: SourceView }) {
   const { t, call } = usePanel()
@@ -37,6 +37,7 @@ function SourceCard({ source }: { source: SourceView }) {
         <div className="dt-row-main">
           <div className="dt-row-title">
             <span className="dt-card-title">{localized(t, source.title)}</span>{description && <InfoTip text={description} />}
+            {source.id !== source.kind && <Tag tone="neutral">{source.id}</Tag>}
             {!source.installed && <Tag tone="warning">{t('sourceNotInstalled')}</Tag>}
           </div>
         </div>
@@ -55,14 +56,53 @@ function SourceCard({ source }: { source: SourceView }) {
     </Fields>
     <SaveBar {...draft} status={restarts && running > 0 ? t('restartInterrupts', { count: running }) : undefined}
       onDiscard={draft.discard} />
+    {source.removable && <div className="dt-row-buttons">
+      <ConfirmButton icon="dismiss" label={t('sourceRemove')} title={t('sourceRemove')} message={t('sourceRemoveConfirm', { source: source.id })}
+        onConfirm={async () => { await call('DELETE settings/:block', { block: `source:${source.id}`, body: { revision: source.revision } }); await reload() }} />
+    </div>}
+  </form>
+}
+/**
+ * Adds a further instance of a kind that admits several, such as another repository: switched off, so the restart its save
+ * causes checks nothing until its fields are filled in and it is switched on.
+ */
+function AddSource({ kinds }: { kinds: SourceView[] }) {
+  const { t, call } = usePanel()
+  const { reload } = useSettings()
+  const [kind, setKind] = useState(kinds[0]?.kind ?? '')
+  const [name, setName] = useState('')
+  const [error, setError] = useState<string>()
+  const suffix = name.trim().toLowerCase()
+  const id = `${kind}-${suffix}`
+  const valid = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(suffix)
+  if (!kinds.length) return null
+  return <form className="dt-card" onSubmit={event => {
+    event.preventDefault()
+    if (!valid) return
+    setError(undefined)
+    call('PUT settings/:block', { block: `source:${id}`, body: { value: { enabled: false, kind, config: {} }, revision: 0 } })
+      .then(async () => { setName(''); await reload() }, (failure: unknown) => { setError(failure instanceof Error ? failure.message : String(failure)) })
+  }}>
+    <div className="dt-card-head"><span className="dt-card-title">{t('sourceAdd')}</span><InfoTip text={t('sourceAddHint')} /></div>
+    <div className="dt-row-buttons">
+      {kinds.length > 1 && <select className="dt-select" aria-label={t('sourceAddKind')} value={kind} onChange={event => setKind(event.target.value)}>
+        {kinds.map(item => <option key={item.kind} value={item.kind}>{localized(t, item.title)}</option>)}
+      </select>}
+      <Input aria-label={t('sourceAddName')} placeholder={t('sourceAddName')} value={name} spellCheck={false} onChange={event => setName(event.target.value)} />
+      <Button type="submit" variant="outline" size="sm" disabled={!valid}>{t('sourceAddButton', { id: valid ? id : `${kind}-…` })}</Button>
+    </div>
+    {error && <p className="dt-error" role="alert">{error}</p>}
   </form>
 }
 
 export function SourceSettings({ focus }: { focus?: string }) {
   const { sources } = useSettings().settings
   useEffect(() => { if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: 'start' }) }, [focus])
+  // One entry per kind that admits several instances, named by its own instance's card.
+  const kinds = sources.filter(source => source.multiple && source.installed && source.id === source.kind)
   return <div className="dt-form">
     {sources.map(source => <SourceCard key={source.id} source={source} />)}
+    <AddSource kinds={kinds} />
     <ConfigHistory blocks={['source:']} />
   </div>
 }

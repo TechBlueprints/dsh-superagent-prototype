@@ -46,6 +46,44 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
    Sign in as the agent account; the last command prints its login. dsh-superagent reads the login the same way.
 
+### GitHub Enterprise Server
+
+A GitHub Source names its host in **GitHub host** (advanced; `github.com` by default). For a GitHub Enterprise Server, sign the same agent CLI in to that host too (`gh-agent auth login --hostname ghe.example.com`); dsh-superagent then calls `gh api … --hostname <host>`, and worker git gets gh's credential helper for that host. Every GitHub Source uses one agent CLI, which workers run as `gh`; setup refuses a second GitHub Source naming another CLI (`forgeCliDiffers`).
+
+### Agent Gitea account (optional)
+
+The Gitea Source (plugin `dsh-superagent-gitea`, inserted disabled; enable it in the plugin manager or set `disabled: false` in `cordis.patch.yml`) watches a repository on a Gitea server. It needs:
+
+1. A Gitea user account for the agent with write access to the repository, and an API token of it with the scopes `write:repository`, `write:issue`, `read:notification` and `read:user` (plus `read:organization` for an organization's `owner/*`), in a file only its owner can read. Setup reads the account's notifications, and names a token without `read:notification` (`tokenScopeMissing`):
+
+   ```sh
+   install -m 600 /dev/null ~/.config/dsh-superagent/gitea-agent.token
+   printf '%s\n' '<token>' > ~/.config/dsh-superagent/gitea-agent.token
+   ```
+
+   Polling reads the token from this file on every call, so replacing the file replaces the token. Worker git pushes with it through `dsh-superagent-credential-<id>`, a shim dsh-superagent writes that prints the token when git asks for a credential for that host: workers can read the token through it, as they can read gh's through `gh auth token`.
+2. A `tea` signed in to the same account with the same token, in its own configuration:
+
+   ```sh
+   cat > ~/.local/bin/tea-agent <<'EOF'
+   #!/bin/sh
+   XDG_CONFIG_HOME="$HOME/.config/tea-agent" exec tea "$@"
+   EOF
+   chmod +x ~/.local/bin/tea-agent
+   tea-agent login add --name agent --url https://git.example.com --token "$(cat ~/.config/dsh-superagent/gitea-agent.token)"
+   tea-agent logins list --output json
+   ```
+
+   Workers run it as `tea`. Setup checks that its login for the host is the token's account (`cliAccountDiffers`). dsh-superagent itself never polls through `tea`: `tea api` exits 0 on an HTTP error and reads one page.
+
+Gitea marks no account as a bot: list review and CI bots under **Automated accounts** of the Source, and under its Policy's bots to let their comments become candidates.
+
+### Several repositories
+
+GitHub and Gitea admit several Sources each: **Add a repository Source** in the Source settings creates `<kind>-<name>`, switched off; fill in its fields and switch it on. Each has its own repository, allowed senders, admission table, health and records, and its Threads are `<id>:<number>`. The GitHub Source's own instance keeps `github:<number>`, so nothing stored before changes and no migration is needed.
+
+A repository written `owner/*` watches every repository of an organization or user from one Source: it reads the account's notifications and keeps those of the owner's repositories, reading the agent's push access to each repository when it first notifies and skipping one it cannot push to. Its Threads are `<id>:<owner>/<name>#<number>`. It observes no repository as a whole: **Receive new Issues**, pull requests, comments and default-branch CI need a Source of that one repository.
+
 ### Feishu bot (optional)
 
 1. Create a self-built app with the bot capability. Grant it the permissions to receive message events, read and send chat messages, and read chat members, then publish the app version.
@@ -144,14 +182,18 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
+1. **Sources.** Set the GitHub repository (`owner/name`, or `owner/*`) and agent CLI, for example `/home/me/.local/bin/gh-agent`; for Gitea, the host, repository, token file and `tea` CLI. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
 2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
-3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
+3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of its repository, on whichever forge and repository it is, from one bare clone per repository:
 
    ```sh
-   git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
-   git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
+   repo="/home/me/src/$DSH_SUPERAGENT_FORGE_HOST/$DSH_SUPERAGENT_REPOSITORY.git"
+   [ -d "$repo" ] || git clone --bare --quiet "$DSH_SUPERAGENT_REPOSITORY_URL" "$repo" &&
+   git -C "$repo" fetch --no-tags "$DSH_SUPERAGENT_REPOSITORY_URL" "${DSH_SUPERAGENT_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
+   git -C "$repo" worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
+
+   A prepare command written for one GitHub repository with `DSH_SUPERAGENT_GITHUB_*` keeps working for GitHub Tickets. With several forge Sources, set **Default forge Source** for Tickets that start in Feishu.
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
@@ -168,10 +210,12 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 
 | Request | Answer |
 | --- | --- |
-| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
+| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, `problems`, each Source instance's own by id, and `accounts` once setup resolved them (with `forges`, one row per forge Source: `id`, `kind`, `host`, `repository`, `web`, `agent`); `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
-| `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
+| `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default. A new Source instance `source:<kind>-<name>` names its kind in `value.kind`, with revision 0 |
+| `DELETE settings/source:<id>` with `{"revision": n}` | Removes a further Source instance (not a kind's own) and restarts: `removed`, `restarting` |
+| `POST triggers` with `{"source", "text", "requested_by", "number"?, "repository"?, "request_id"?}` | Creates a ticket from the operator: a Trigger from `requested_by`, the person's account on forge Source `source`, as if they asked the agent directly. It is explicit when that account is on the Source's `allowed` list; otherwise the Source's admission table decides, as for a sender off the list who addresses the agent (by default: ignored). With `number` (and, on an `owner/*` Source, `repository`), it is on that Issue or pull request's Thread and replies go there; without one, it starts a Thread of its own, `<source>:operator:<id>`, with no Channel. A repeated `request_id` is the same Trigger. Answers `trigger_id`, `thread`, `received` (`stored`, `duplicate` or `filtered`) and `sender` (`source`, `id`, `listed`) |
 | `POST executor/pause` with `{"paused": true}` or `false` | Pauses or resumes processing: `paused` |
 | `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused when setup has nothing to fix |
 | `POST policy-sync/<source id>` | Syncs that Source's allowed list now: `policy`, the Source's part as saved |
@@ -187,7 +231,7 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
-| `github`, `feishu`, `history` | Source polling, events and history recovery |
+| `github`, `gitea`, `feishu`, `history` | Source polling, events and history recovery; a further instance reports as `<id>` |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -199,10 +243,10 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
-- `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
+- `source:github`, `source:gitea`, `source:<kind>-<name>`, `source:feishu`: `{"enabled": true, "config": {…}}`, and `"kind"` for a further instance. GitHub's config has `repository`, `cli` and `host`; Gitea's has `host`, `repository`, `tokenFile`, `cli` and `automatedAccounts`; both have the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
+- `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}], "followUps": "listed"}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub and Gitea; an unset cell takes its default. `followUps` is `any` (when absent) or `listed`, which makes only listed senders' messages on a Ticket's Threads its follow-ups (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
-- `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
+- `executor`: `model`, `maxWorkers`, `directory`, `prepare`, `blockedCommands` and `defaultForge`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
 
 Changing a repository or CLI runs the corresponding setup check first. A failed check returns 400 with details in `setup`. A successful account change, or any save while setup is pending, returns `restarting: true`. The API is temporarily unavailable while the application restarts.
 
@@ -217,18 +261,35 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
+Setup verifies each enabled forge Source's repository and the agent's push access (for `owner/*`, that the owner exists), writes the worker environment, and checks that git uses only the agent credentials for each forge host. A forge Source that fails its check is left out with its own problem while the others run; when none passes, setup stops. A Feishu setup failure disables only the Feishu Source.
 
 The process environment that setup writes:
 
-- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
-- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
+- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's GitHub CLI; `tea` runs the agent's Gitea CLI; `dsh-superagent-credential-<id>` answers git for a Gitea Source's host from its token file; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
+- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects one credential helper per forge host (gh's for a GitHub host, the credential shim for a Gitea host), rewrites each host's SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN`, `GITHUB_TOKEN`, `GH_HOST`, `GH_REPO`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and `GITEA_TOKEN` are removed.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
 ## Try it
 
 From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
+
+### Gitea differences
+
+The Gitea Source reads Gitea's REST API (`/api/v1`) where the GitHub Source reads GitHub's. Where Gitea differs:
+
+| GitHub | Gitea |
+| --- | --- |
+| `X-Poll-Interval`, ETag and 304 | Neither: the configured interval (at least 15 seconds), every read in full |
+| `per_page`, server-side sort | `page` and `limit` (at most 50) with `Link` (the repository-wide comment list sends only `X-Total-Count`, which counts its pages instead); every page is read and sorted here, and a list longer than 20 pages fails the read without moving its cursor |
+| A pull request's notification names `/pulls/<n>` | Always `/issues/<n>`, with `subject.type: Pull` |
+| Repository-wide inline review comments | None: inline comments arrive only on subscribed pull requests |
+| Inline comments with `in_reply_to_id` | Comments of each review; a thread's root is the earliest comment on the same file and line. Gitea gives an inline comment the conversation's address, so it is addressed on the files page (`/pulls/<n>/files#issuecomment-<id>`), and a reply goes to `pulls/<n>/comments/<root>/replies` |
+| Check runs and statuses | Statuses only; Gitea Actions report as statuses, and `warning` neither fails nor runs |
+| 410 for a deleted Issue | 404 for the Issue and 500 for its comments: read as deleted when the repository itself still reads, so a reply to it is dropped as `channelGone` |
+| Resolving a thread or dismissing a review leaves its comments' times | Resolving an inline comment, or a later review by the same person dismissing an earlier one, moves its `updated_at`: a resolved comment keeps its creation time and a review its submission time, so neither arrives again as an edit |
+| `[bot]` logins | No bot marker: the Source's **Automated accounts** |
+| A noreply commit email | The account's own email, else `<login>@noreply.<host>` |
 
 ## Upgrade
 

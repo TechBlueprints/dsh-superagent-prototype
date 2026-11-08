@@ -68,14 +68,17 @@ The prepare command and Executor instructions receive the same execution variabl
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
-| `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
-| `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
-| `DSH_SUPERAGENT_GITHUB_NUMBER`, `DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | The Issue or pull request that started the Ticket, and its head ref when it is a pull request |
+| `DSH_SUPERAGENT_FORGE`, `DSH_SUPERAGENT_FORGE_SOURCE` | Forge | The forge of the Ticket's repository (`github` or `gitea`) and its Source instance id |
+| `DSH_SUPERAGENT_FORGE_HOST`, `DSH_SUPERAGENT_FORGE_API`, `DSH_SUPERAGENT_FORGE_CLI` | Forge | Its host, API base URL, and the CLI workers use there (`gh` or `tea`) |
+| `DSH_SUPERAGENT_REPOSITORY`, `DSH_SUPERAGENT_REPOSITORY_URL` | Forge | The Ticket's repository, `owner/name`, and its HTTPS clone URL |
+| `DSH_SUPERAGENT_ACCOUNT`, `DSH_SUPERAGENT_COMMIT_EMAIL` | Forge | The agent account there and its commit email |
+| `DSH_SUPERAGENT_NUMBER`, `DSH_SUPERAGENT_PR_HEAD` | Forge | The Issue or pull request that started the Ticket there, and its head ref (`refs/pull/<n>/head`) when it is a pull request |
+| `DSH_SUPERAGENT_GITHUB_REPOSITORY`, `…_ACCOUNT`, `…_COMMIT_EMAIL`, `…_NUMBER`, `…_PR_HEAD` | GitHub | The same, kept for prepare commands written for the GitHub Source: filled for a Ticket on GitHub, empty on another forge |
 | `DSH_SUPERAGENT_FEISHU_BOT`, `DSH_SUPERAGENT_FEISHU_CHAT` | Feishu | The bot, and the chat that started the Ticket |
 
-Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
+Ticket-specific values come from its directory, originating Trigger and forge repository. The forge variables exist only with a Ticket. The Ticket's repository (`forgeOf`, `src/app/forge-of.ts`) is the forge Source of a Thread it follows, such as the pull request it opened; else its originating Trigger's Source, when that is a forge; else the Execution setting **Default forge Source** (`executor.defaultForge`); else the only forge Source. A Ticket from Feishu with several forge Sources and no default has no repository: its forge variables are empty and it cannot report a pull request. On a wildcard Source (`owner/*`) the repository is the one its Thread or Trigger names. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
 
-Workers reach GitHub through the agent account's `gh` and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
+Workers reach GitHub through the agent account's `gh`, Gitea through its `tea`, and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
 
 These wrappers and directories establish defaults, not a security boundary. A worker can still execute a program by absolute path.
 
@@ -95,7 +98,7 @@ Reviews without a body, such as approvals, also arrive as Triggers and can wake 
 - **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on its Threads resumes it.
 ### Pull requests
 
-A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the GitHub Source. Reopened pull requests are followed again.
+A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the forge Source of its repository. A pull request is claimed through that Source's rules (`claimPull`), in the Ticket's repository only. Reopened pull requests are followed again.
 
 The Ticket is done when none of the pull requests it opened remain open. If it opened none, all pull requests it follows must be closed. It then ends with the outcome of the last relevant close and keeps its Subscriptions, allowing a later human comment to resume it.
 

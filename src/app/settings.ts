@@ -6,7 +6,7 @@ import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSch
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
-import type { SourceRegistry } from '../sources/registry.ts'
+import { instanceIdAllowed, type SourceRegistry } from '../sources/registry.ts'
 import { resolveRoleModel } from './role-models.ts'
 import { changedPaths, settingsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
@@ -45,7 +45,7 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     guard: (current, candidate, origin) => { if (origin !== 'panel' && environment(current) !== environment(candidate)) throw new UserError('panelOnlyEnvironment') },
   },
   source: {
-    parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
+    parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), kind: z.string().optional(), config: z.unknown() }).parse(value)),
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources, [id]: value as SettingsValue['sources'][string] } }),
     // Only the management panel may switch source accounts.
     guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
@@ -153,7 +153,15 @@ export class Settings {
     const kind = block.startsWith('source:') ? 'source' : block
     if (!(kind in BLOCKS)) throw new UserError('unknownBlock', { block })
     const rules = BLOCKS[kind as keyof typeof BLOCKS]
-    if (kind === 'source' && !sources.kind(id)) throw new UserError('sourceNotInstalled', { source: id })
+    // A new instance of a kind that admits several names its kind; adding one is panel-only, like the accounts it reads.
+    const added = kind === 'source' && !sources.kindFor(id)
+    if (added) {
+      const named = z.object({ kind: z.string() }).loose().safeParse(value).data?.kind
+      const target = named === undefined ? undefined : sources.kind(named)
+      if (!target) throw new UserError('sourceNotInstalled', { source: named ?? id })
+      if (!instanceIdAllowed(target, id)) throw new UserError('sourceIdRefused', { source: id, kind: target.kind })
+      if (origin !== 'panel') throw new UserError('panelOnlyAccounts')
+    }
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
@@ -173,7 +181,7 @@ export class Settings {
       const delivery = await sessions.delivery(`settings:${block}`)
       return { saved: true, revision: store.blockRevision(block), policy_changed: false, restarting: false, context_delivery: delivery }
     }
-    const restarting = setupChanged(old, settings) || !this.host.setup.configured()
+    const restarting = added || setupChanged(old, settings) || !this.host.setup.configured()
     const before = policyVersion(old), after = policyVersion(settings)
     const scope = (version: SettingsValue) => ({
       scope: (input: { source: string; meta: Record<string, unknown> }) => this.host.sources.scope(input, version) })
@@ -193,6 +201,26 @@ export class Settings {
     if (restarting) this.host.setup.restart()
     else this.host.requestPass()
     return { saved: true, revision: store.blockRevision(block), policy_changed: before !== after, restarting, context_delivery: delivery }
+  }
+  /**
+   * Removes a further instance of a kind (never a kind's own, which can only be switched off), panel-only, and restarts
+   * dsh-superagent so its loops and health entries stop; its Policy part, Threads and records stay as stored.
+   * @throws UserError (`sourceNotRemovable`) for a kind's own instance or an id no stored instance has; SettingsConflict when stale.
+   */
+  async remove(id: string, revision: number): Promise<{ removed: true; restarting: true }> {
+    const { store, sessions } = this.host
+    const block = `source:${id}` as const
+    const old = store.settings()
+    if (!old.sources[id] || (old.sources[id].kind ?? id) === id) throw new UserError('sourceNotRemovable', { source: id })
+    if (revision !== store.blockRevision(block)) throw new SettingsConflict('Settings changed. Reload before saving.')
+    const { [id]: _removed, ...rest } = old.sources
+    const settings = { ...old, sources: rest }
+    store.atomic(() => {
+      store.saveSettings(settings, { source: 'panel', block, policyVersion: policyVersion(settings), policyChanged: false, notified: [] })
+      sessions.notify(...settingsNotice(block, [`sources.${id}`]))
+    })
+    this.host.setup.restart()
+    return { removed: true, restarting: true }
   }
   /**
    * Pauses or resumes processing (new evaluations, worker dispatch, and channel delivery, while Sources continue recording
@@ -217,7 +245,7 @@ export class Settings {
     const { sources } = this.host
     if (!this.host.setup.configured()) return []
     return sources.instances().filter(instance => instance.installed && instance.enabled).flatMap(instance => {
-      const sync = sources.kind(instance.id)?.policy?.sync
+      const sync = sources.kindFor(instance.id)?.policy?.sync
       const part = sources.policyPart(instance.id)
       return sync && part && sync.ready(part) ? [instance.id] : []
     })
@@ -234,7 +262,7 @@ export class Settings {
     const health = this.syncHealth(id)
     try {
       const revision = store.blockRevision('policy')
-      const part = await sources.kind(id)!.policy!.sync!.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
+      const part = await sources.kindFor(id)!.policy!.sync!.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
       if (revision !== store.blockRevision('policy')) throw new SettingsConflict('Policy changed during synchronization. Retry with the current settings.')
       const policy = store.settings().policy
       // Skip saving a new revision when the synced list is unchanged.

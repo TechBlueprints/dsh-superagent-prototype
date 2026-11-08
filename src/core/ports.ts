@@ -22,6 +22,11 @@ export interface Policy {
   revalidate(mandate: Mandate): boolean
   /** Whether an inferred candidate may be accepted on the rules its assessment matched: assessments accept, and each rule is enabled. */
   admitsInferred(rules: readonly string[]): boolean
+  /**
+   * Whether a person's message on a ticket's Thread is that ticket's own follow-up, which its worker decides; when not, it
+   * reaches the ticket for context only and goes to Eval, as a message on a context Thread does. Every message is, without it.
+   */
+  ownsFollowup?(trigger: Trigger): boolean
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
 }

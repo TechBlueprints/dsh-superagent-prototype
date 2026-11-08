@@ -99,3 +99,42 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   vi.mocked(Setup.prototype.configured).mockRestore()
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
+it('adds a further Source instance only of a kind that admits several, from the panel, and removes only further instances', async () => {
+  h = await startRuntime()
+  const { settings } = h.runtime
+  // Feishu admits one instance; a further one, an id of another kind, or one from a tool is refused before anything is saved.
+  await expect(settings.save('source:feishu-two', { enabled: true, kind: 'feishu', config: {} }, 0, 'panel'))
+    .rejects.toMatchObject({ code: 'sourceIdRefused' })
+  await expect(settings.save('source:other', { enabled: true, kind: 'missing', config: {} }, 0, 'panel'))
+    .rejects.toMatchObject({ code: 'sourceNotInstalled' })
+  await expect(settings.remove('github', 0)).rejects.toMatchObject({ code: 'sourceNotRemovable' })
+  await expect(settings.remove('github-gone', 0)).rejects.toMatchObject({ code: 'sourceNotRemovable' })
+  expect(h.runtime.store.settings().sources['feishu-two']).toBeUndefined()
+  const response = await h.api('DELETE', 'settings/source:github', { revision: 0 })
+  expect(response).toMatchObject({ status: 400, body: { code: 'sourceNotRemovable' } })
+})
+it('takes an operator request as the message of the person it names: explicit from a listed account, on the Issue it names', async () => {
+  h = await startRuntime()
+  const issue = { id: 1012, number: 12, title: 'Login fails', body: '', state: 'open', created_at: '2026-09-09T00:00:00Z',
+    html_url: 'https://github.com/acme/widgets/issues/12', user: { login: 'carol', type: 'User' } }
+  vi.mocked(Commands.prototype.gh).mockImplementation(async args => args[1] === 'repos/acme/widgets/issues/12' ? issue : {})
+  const asked = await h.api('POST', 'triggers', { source: 'github', number: 12, text: 'Please fix the login', requested_by: 'alice', request_id: 'chat-1' })
+  expect(asked).toMatchObject({ status: 200, body: { thread: 'github:12', received: 'stored', sender: { source: 'github', id: 'alice', listed: true } } })
+  const trigger = h.runtime.store.triggers.get(asked.body.trigger_id as string)!
+  expect(trigger).toMatchObject({ source: 'github', actor: { source: 'github', id: 'alice' }, human: true, addressed: 'direct',
+    channel: { source: 'github', thread: 'github:12', address: { number: '12', url: issue.html_url } }, meta: { number: 12, isPr: false, kind: 'operator', requestedBy: 'alice' } })
+  await h.runtime.idle()
+  expect(h.candidates()).toContain(trigger.id)
+  // The router's card names the sender, whether the Source lists them, and the candidate's strength.
+  expect(h.relays(h.runtime.masterId).find(item => item.trigger_id === trigger.id))
+    .toMatchObject({ kind: 'candidate', strength: 'explicit', sender: { source: 'github', id: 'alice', listed: true, human: true } })
+  // The same request id is the same Trigger; a request without an Issue starts a Thread of its own; a sender off the list is not explicit.
+  expect((await h.api('POST', 'triggers', { source: 'github', number: 12, text: 'Please fix the login', requested_by: 'alice', request_id: 'chat-1' })).body)
+    .toMatchObject({ trigger_id: trigger.id, received: 'duplicate' })
+  const loose = await h.api('POST', 'triggers', { source: 'github', text: 'Look at the flaky test', requested_by: 'mallory' })
+  expect(loose.body).toMatchObject({ thread: expect.stringMatching(/^github:operator:/), sender: { listed: false } })
+  await h.runtime.idle()
+  expect(h.candidates()).not.toContain(loose.body.trigger_id)
+  expect(await h.api('POST', 'triggers', { source: 'feishu', text: 'x', requested_by: 'alice' }))
+    .toMatchObject({ status: 400, body: { error: 'feishu is no forge Source that is on and set up' } })
+})

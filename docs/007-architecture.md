@@ -116,7 +116,7 @@ The core's codes, such as `timeout`, `policyChanged`, `routed` and `startedTicke
 
 A Ticket keeps each fact once. It is open while it has no `ended`, which records when, by whom, why and with what outcome it ended; what it last said is its latest Assignment Report (`latestReport`); and its Executor Session is named after it (`workerSessionId` in `src/executor/dsh.ts`).
 
-Its fields are typed: `origin`, the admissible Trigger that gave its Eval's batch its strength and the batch itself (`triggerId`, `triggerIds`); `execution`, what the Executor chose (`name`, `directory` and `assignment`); `delivery`, the last failed Input delivery (`error`, `at`), until a delivery succeeds, a new Assignment starts or the Ticket ends; and `follows`, the Threads a Source made it follow, each `{thread, own, closed?}`: `own` when the Ticket opened it, and `closed` with `at` and `outcome` once it closed. Tickets alone writes `follows`; the GitHub Source reads its pull requests with `pullsOf` and `pullOf` (`src/sources/github-pull.ts`).
+Its fields are typed: `origin`, the admissible Trigger that gave its Eval's batch its strength and the batch itself (`triggerId`, `triggerIds`); `execution`, what the Executor chose (`name`, `directory` and `assignment`); `delivery`, the last failed Input delivery (`error`, `at`), until a delivery succeeds, a new Assignment starts or the Ticket ends; and `follows`, the Threads a Source made it follow, each `{thread, own, closed?}`: `own` when the Ticket opened it, and `closed` with `at` and `outcome` once it closed. Tickets alone writes `follows`; each forge Source reads its pull requests with `pullsOf` and `pullOf` (`src/sources/forge-pull.ts`).
 
 An Input that carries a Trigger records whether a person wrote it, which `waitsForPerson` reads. A Thread also lists in `context` the subscribed Tickets that follow it only for context, and counts in `expired` the Evals of its queued Triggers that expired in a row; an Evaluation records its `primary` Trigger and when its candidate was `delivered`.
 
@@ -186,11 +186,15 @@ Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. 
 
 `SourceRegistry` (`registry.ts`) owns registered kinds and stored instances, and implements the Engine's `SourceScope`. Registration claims health entries on `HealthBoard`; duplicate claims and reserved `sync:` names are refused. A SourceContext writes only through its registration's claimed entries, so reports after unregistration do nothing.
 
-Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. `find` asks each kind that supports search.
+A kind has its own instance, whose id is the kind's id and which exists unstored. A kind that declares `multiple` (the forges) also has every stored instance `settings.sources[<kind>-<name>] = { enabled, kind, config }`. Triggers, Threads (`<instance>:<id>`), Channels, Policy parts and KV records name the instance id, so each instance has its own and the kinds' own instances keep theirs unchanged. A further instance's health entries are `<id>` for the entry named after its kind and `<id>:<name>` for the others. `kindOf`, `kindFor`, `instancesOf` and `healthNames` resolve them.
+
+Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. `find` asks each instance of each kind that supports search.
+
+The forge kinds (GitHub, Gitea) are one generic forge Source (`src/sources/forge*.ts`) over a `ForgeClient` per forge: `GithubClient` calls the agent's gh, `GiteaClient` the Gitea API with the token file. Setup resolves each enabled forge instance into a `ForgeAccount` of `Deployment.forges`; a Ticket's repository is `forgeOf` its Threads and origin (`src/app/forge-of.ts`).
 
 Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
 
-Plugins receive `SourceHost`: the registry and `context(kind)`. The kind itself uses a narrower `SourceContext`, built by `sourceContextOf` in `src/app/source-context.ts`.
+Plugins receive `SourceHost`: the registry and `context(kind, instance)`. The kind itself uses a narrower `SourceContext`, built by `sourceContextOf` in `src/app/source-context.ts`.
 
 That context supplies deployment and commands, setup readiness (`ready`, `configured`, `problem`), configuration, `receive`, `atomic`, and typed `state`. It also exposes Thread reads and metadata writes, Ticket reads and binding/closure commands, Trigger reads, `notify` through Outbox, and `report` for declared health entries.
 
@@ -249,7 +253,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
-| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
+| `src/sources/forge*.ts`, `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | Forge (GitHub, Gitea) and Feishu payloads into Triggers and Thread facts, and messages into CLI and API calls |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
 
 ## Dependency rules
@@ -335,7 +339,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
-| `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
+| `src/app/operator.ts` | Operator requests (`POST triggers`): a person's request the operator sends on a forge Source, optionally on one of its Issues or pull requests |
+| `src/app/forge-of.ts` | `forgeOf`: the forge repository a Ticket works on, which its environment, PR claims and resources name |
+| `src/app/source-context.ts` | `sourceContextOf`: each Source instance's `SourceContext` |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |
 | `src/app/cards.ts` | Compact cards of Triggers, Tickets, Threads and Decisions for models, the closed set of ticket card states `TICKET_STATES`, and `textPage` |
 | `src/app/resources.ts` | `RESOURCES` and `readResource`: what `orchestrator_read` reads, for each role |
@@ -362,11 +368,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
-| `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
-| `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
-| `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
-| `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
-| `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
+| `src/sources/forge.ts` | The generic forge Source: `forgeKind()` builds a forge's kind (one per forge product, several instances each), `forgeClient()` gives an instance's client, and `applyForge()` runs one polling loop per instance |
+| `src/sources/forge-client.ts` | The `ForgeClient` contract every forge's client implements, `ForgeError`, and the normalized notification, stream and CI records |
+| `src/sources/forge-poll.ts` | A forge instance's poll round: notifications, repository streams, the pull requests of open Tickets with their CI, and subscribed Threads |
+| `src/sources/forge-trigger.ts` | Forge comments, reviews, Issue bodies and CI changes as Triggers of one instance (`Origin`), with ids unchanged for each kind's own instance |
+| `src/sources/forge-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
+| `src/sources/forge-channel.ts` | The forge Channel: comments and review thread replies, `sent` or `gone`, and their links |
+| `src/sources/forge-read.ts` | CI snapshots, repository reads, an instance's `<id>/` resources, and `forgeThreadContext`: an Issue's or pull request's conversation by page |
+| `src/sources/github.ts` | The GitHub kind (github.com or a GitHub Enterprise Server) and plugin entry, exported as `./github-watch` |
+| `src/sources/github-client.ts` | `GithubClient`: the `ForgeClient` of a GitHub instance, the agent's gh restricted to its repository (`--hostname` for a GitHub Enterprise Server), and GitHub's URL conventions |
+| `src/sources/gitea.ts` | The Gitea kind and plugin entry, exported as `./gitea-watch` |
+| `src/sources/gitea-client.ts` | `GiteaClient`: the `ForgeClient` of a Gitea instance over fetch with its token file, paging, review-thread roots, statuses as CI and the 404 rule, and Gitea's URL conventions |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -409,6 +421,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+| `tests/forge-of.spec.ts` | Which forge repository a Ticket works on, its forge variables, and the session marker that starts each Session's system prompt |
+| `tests/gitea.spec.ts` | The Gitea Source against a stubbed Gitea API: paging, normalization, threads, CI, the 404 rule, the Channel, a poll round and setup |
+| `tests/github-client.spec.ts` | `GithubClient`'s gh calls for github.com and a GitHub Enterprise Server host, inside one repository |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |

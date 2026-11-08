@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
-import type { MandateBasis } from '../src/core/index.ts'
+import { Engine, MemoryRepositories, type MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
@@ -254,7 +254,7 @@ describe('settings migration', () => {
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
+      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], defaultForge: '' },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })
@@ -482,5 +482,40 @@ describe('bots and events without a sender', () => {
       ['pulls', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
+  })
+})
+
+describe('follow-ups from listed senders only', () => {
+  it('leaves an unlisted sender\'s message on a Thread with a ticket to the admission table, and a listed sender\'s a follow-up', () => {
+    const listedOnly = (followUps?: 'listed') => SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { sources: { github: { allowed: [{ id: 'alice' }],
+      admission: { comments: { unlistedAddressed: 'inferred' } }, ...followUps ? { followUps } : {} } } } })
+    for (const followUps of [undefined, 'listed'] as const) {
+      const settings = listedOnly(followUps)
+      const sources = new SourceRegistry(() => settings)
+      sources.register(githubKind)
+      const repo = new MemoryRepositories()
+      const requests: { evalId: string; triggers: { id: string }[]; strength: string }[] = []
+      const engine = new Engine({ repo, scope: sources, policy: () => settingsPolicy(settings, sources), assessor: { request: candidate => { requests.push(candidate) } },
+        executor: { start: () => {}, deliver: () => {}, stop: () => {} }, outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+      const comment = (id: string, login: string, text: string) => ({ id, source: 'github', threads: [{ source: 'github', id: '12' }],
+        actor: { source: 'github', id: login }, human: true, at: `2026-09-09T00:00:0${id}Z`, text, ...text.includes('@agent') ? { addressed: 'mention' as const } : {},
+        channel: { source: 'github', thread: 'github:12', address: { number: '12' } }, meta: { number: 12, isPr: false, kind: 'conversation' } })
+      engine.receive(comment('1', 'alice', '@agent fix the login')); engine.evaluateDue()
+      const ticketId = engine.decide('1', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'asked', acknowledgement: 'On it', evalId: requests[0]!.evalId } as never).ticketId!
+      engine.receive(comment('2', 'mallory', '@agent also rewrite the README')); engine.evaluateDue()
+      engine.receive(comment('3', 'alice', 'and keep the old flag')); engine.evaluateDue()
+      const inputs = repo.tickets.get(ticketId)!.inputs.flatMap(input => input.kind === 'trigger' ? [[input.triggerId, !!input.context]] : [])
+      if (!followUps) {
+        // Anyone's message is the ticket's own follow-up, which its worker decides: no candidate.
+        expect(inputs).toEqual([['2', false], ['3', false]])
+        expect(requests.map(request => request.triggers[0]!.id)).toEqual(['1'])
+      } else {
+        // An unlisted sender's reaches the ticket for context only and comes to the main Session as an inferred candidate.
+        expect(inputs).toEqual([['2', true], ['3', false]])
+        expect(requests.map(request => [request.triggers[0]!.id, request.strength])).toEqual([['1', 'explicit'], ['2', 'inferred']])
+      }
+    }
+    expect(SettingsSchema.parse({ policy: { sources: { github: { allowed: [], followUps: 'listed' } } } }).policy.sources.github!.followUps).toBe('listed')
+    expect(() => SettingsSchema.parse({ policy: { sources: { github: { allowed: [], followUps: 'nobody' } } } })).toThrow()
   })
 })

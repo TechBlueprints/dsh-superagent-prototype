@@ -8,7 +8,10 @@ import { checkedImText } from '../infra/text.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import { admissionContext } from '../sources/admission-context.ts'
-import { readRepositoryPath } from '../sources/github-read.ts'
+import { readRepositoryPath } from '../sources/forge-read.ts'
+import { senderOf } from '../policy.ts'
+import { forgeClient } from '../sources/forge.ts'
+import { forgeOfKind } from '../deployment.ts'
 import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
@@ -206,7 +209,7 @@ export class MasterAssessor implements Assessor {
     })() : { error: error ?? 'Call orchestrator_eval to load initial context', complete: false }
     const settings = this.host.settings()
     const others = candidate.triggers.filter(item => item.id !== trigger.id)
-    return { trigger_id: trigger.id, strength: candidate.strength, mode: settings.eval.mode,
+    return { trigger_id: trigger.id, strength: candidate.strength, sender: senderOf(settings, trigger), mode: settings.eval.mode,
       source: { kind: trigger.source, actor: trigger.actor.id, thread: threadKey(trigger.threads[0]!), ...(trigger.url
         ? { url: trigger.url } : {}) },
       ...cut(trigger.text, TRIGGER_CHARS), ...imageIds(source?.messageId ?? '', trigger.text),
@@ -263,7 +266,10 @@ export class MasterAssessor implements Assessor {
         body = JSON.stringify({ images: references, next_read: next, ...result.body })
       }
       else {
-        body = await readRepositoryPath(commands, read.path!, read.resource === 'directory' ? 'directory' : 'file')
+        // The repository of the forge the candidate came from, else the first GitHub Source's.
+        const forge = this.host.deployment.forges[trigger.source] ?? forgeOfKind(this.host.deployment, 'github')
+        if (!forge) throw new Error('No forge Source has a repository to read')
+        body = await readRepositoryPath(forgeClient(commands, forge.id), read.path!, read.resource === 'directory' ? 'directory' : 'file')
       }
       snapshots.set(cacheKey, body)
       return textPage(read.resource, body, read.offset, 4000)

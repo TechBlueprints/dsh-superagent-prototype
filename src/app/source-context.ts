@@ -4,7 +4,7 @@ import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SetupProblem } from '../setup.ts'
 import type { SourceContext } from '../sources/host.ts'
-import type { SourceRegistry } from '../sources/registry.ts'
+import { instanceHealth, type SourceRegistry } from '../sources/registry.ts'
 import type { Outbox } from './outbox.ts'
 import type { Store } from './store.ts'
 
@@ -18,8 +18,10 @@ export interface SourceContextDeps {
   readonly deployment: Deployment
   readonly ready: Promise<void>
   configured(): boolean
-  /** Setup problem whose `place` matches the Source kind receives it on `context.problem`. */
+  /** Setup problem whose `place` matches the Source instance receives it on `context.problem`. */
   readonly setupProblem?: SetupProblem | undefined
+  /** Why setup left a Source instance's account out, by instance id. */
+  readonly setupProblems?: Readonly<Record<string, SetupProblem>> | undefined
   /** Why setup found no Feishu bot even though the Feishu Source names a CLI. */
   readonly feishuProblem?: SetupProblem | undefined
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
@@ -27,19 +29,23 @@ export interface SourceContextDeps {
 }
 
 /**
- * Builds the context for one Source kind. Health reports are restricted to entries declared by the kind and
- * bound to the active registration, becoming no-ops once unregistered.
+ * Builds the context for one instance of a Source kind (by default the kind's own). Health reports are restricted to the
+ * instance's entries of those the kind declares, and bound to the active registration, becoming no-ops once unregistered.
  */
-export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }): SourceContext {
+export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }, instance = kind.kind): SourceContext {
   const { store } = deps
-  const health = deps.sources.healthEntries(kind.health)
+  const named = (entry: string) => instanceHealth(kind.kind, instance, entry)
+  const health = deps.sources.healthEntries(kind.health.map(named))
   return {
+    instance,
     get deployment() { return deps.deployment },
     commands: deps.commands,
     ready: deps.ready,
     configured: () => deps.configured(),
-    get problem() { return [deps.feishuProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },
-    config: <C extends Record<string, unknown>>(id: string) => {
+    get problem() {
+      return [deps.setupProblems?.[instance], deps.feishuProblem, deps.setupProblem].find(problem => problem?.place === instance)
+    },
+    config: <C extends Record<string, unknown>>(id = instance) => {
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined
     },
@@ -66,7 +72,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     notify: message => { deps.outbox.send(message) },
     report: (entry, value) => {
       if (!kind.health.includes(entry)) throw new Error(`The ${kind.kind} Source has no health entry ${entry}`)
-      health.get(entry)?.set(value)
+      health.get(named(entry))?.set(value)
     },
   }
 }

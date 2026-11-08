@@ -71,6 +71,11 @@ it('refuses to stop when two processes serve the profile, before it writes the s
   expect(await run('stop')).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes found') })
   expect(existsSync(join(control('superagent'), 'manually-stopped'))).toBe(false)
 })
+it('finds the service where Node names its main thread MainThread, as Node 24 does on Linux', async () => {
+  const pid = sleeper()
+  processes(`${pid} MainThread node /home/agent/.local/bin/dsh --profile superagent --no-open`, `${sleeper()} MainThread python3 /opt/tool.py --profile superagent`)
+  expect(await status('superagent')).toMatchObject({ pids: [pid] })
+})
 it('keeps a stop per profile', async () => {
   expect(await run('stop', '--profile', 'one')).toMatchObject({ code: 0, stdout: expect.stringContaining('Automatic recovery is paused') })
   expect(await status('one')).toMatchObject({ manually_stopped: true })

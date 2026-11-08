@@ -25,11 +25,55 @@ describe('Source registry', () => {
     const sources = new SourceRegistry(() => settings)
     sources.register(probe); sources.register(githubKind)
     expect(sources.instances()).toEqual([
-      { id: 'github', kind: 'github', enabled: true, config: { repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3,
+      { id: 'github', kind: 'github', enabled: true, config: { host: 'github.com', repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3,
         observeIssues: false, observePulls: false, observeComments: false, observeCi: false }, installed: true },
       { id: 'probe', kind: 'probe', enabled: false, config: { interval: 9 }, installed: true },
       { id: 'retired', kind: 'retired', enabled: true, config: { x: 1 }, installed: false },
     ])
+  })
+  it('holds further instances of a kind that admits several, each with its own config, scope, health and searches', () => {
+    const board = new HealthBoard()
+    const settings = SettingsSchema.parse({ sources: {
+      'probe-two': { enabled: true, kind: 'probe', config: { interval: 2 } }, 'probe-off': { enabled: false, kind: 'probe', config: {} },
+      // An id that does not start with its kind's id names no instance of it, and neither does a kind that admits one.
+      stray: { enabled: true, kind: 'probe', config: {} }, 'quiet-two': { enabled: true, kind: 'quiet', config: {} } } })
+    const sources = new SourceRegistry(() => settings, board)
+    const several: SourceKind<{ interval: number }> = { ...probe, multiple: true, health: ['probe', 'loop'],
+      scope: (_input, config) => ({ listened: true, observed: config.interval > 3 }),
+      find: (query, instance) => ({ threads: [`${instance}:${query}`], terms: [] }) }
+    sources.register(several); sources.register({ ...probe, kind: 'quiet' })
+    expect(sources.instancesOf('probe')).toEqual(['probe', 'probe-off', 'probe-two'])
+    expect(sources.instances().map(({ id, kind, enabled, installed }) => [id, kind, enabled, installed])).toEqual([
+      ['probe', 'probe', true, true], ['probe-off', 'probe', false, true], ['probe-two', 'probe', true, true],
+      ['quiet', 'quiet', true, true], ['stray', 'probe', true, false], ['quiet-two', 'quiet', true, false]])
+    expect(sources.instance('probe-two')).toEqual({ id: 'probe-two', kind: 'probe', enabled: true, config: { interval: 2 } })
+    expect(sources.instance('probe-three')).toBeUndefined()
+    expect(sources.kindFor('probe-two')?.kind).toBe('probe')
+    expect(sources.scope({ source: 'probe', meta: {} })).toEqual({ listened: true, observed: true })
+    expect(sources.scope({ source: 'probe-two', meta: {} })).toEqual({ listened: true, observed: false })
+    expect(sources.scope({ source: 'probe-off', meta: {} })).toEqual({ listened: false, reason: 'source_disabled' })
+    expect(sources.find('12').threads).toEqual(['probe:12', 'probe-off:12', 'probe-two:12'])
+    // The kind's own instance keeps the declared names; each further one has its own.
+    expect(Object.keys(board.all).sort()).toEqual(['loop', 'probe', 'probe-off', 'probe-off:loop', 'probe-two', 'probe-two:loop'])
+    expect(sources.healthNames('probe-two')).toEqual(['probe-two', 'probe-two:loop'])
+    const context = sourceContextOf({ sources, deployment: testDeployment() } as unknown as SourceContextDeps, several, 'probe-two')
+    expect(context.instance).toBe('probe-two')
+    context.report('loop', { state: 'ready', detail: 'two' })
+    expect(board.all['probe-two:loop']).toEqual({ state: 'ready', detail: 'two' })
+    expect(board.all.loop).toEqual({ state: 'starting', detail: '' })
+    // A new instance names its kind; an id the kind cannot take is refused.
+    expect(sources.validate('probe-new', { enabled: true, kind: 'probe', config: {} })).toEqual({ enabled: true, kind: 'probe', config: { interval: 5 } })
+    expect(() => sources.validate('other', { enabled: true, kind: 'probe', config: {} })).toThrow('cannot name an instance')
+    expect(() => sources.validate('quiet-new', { enabled: true, kind: 'quiet', config: {} })).toThrow('cannot name an instance')
+  })
+  it('keeps the own instance of a kind that is off until saved off while it is unstored, as setup does', () => {
+    let settings = SettingsSchema.parse({ sources: { 'probe-two': { enabled: true, kind: 'probe', config: {} } } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register({ ...probe, multiple: true, offUntilSaved: true })
+    expect(sources.instances().map(({ id, enabled }) => [id, enabled])).toEqual([['probe', false], ['probe-two', true]])
+    expect(sources.scope({ source: 'probe', meta: {} })).toEqual({ listened: false, reason: 'source_disabled' })
+    settings = SettingsSchema.parse({ sources: { probe: { enabled: true, config: {} } } })
+    expect(sources.instance('probe')?.enabled).toBe(true)
   })
   it('validates submitted instances with the kind schema and refuses kinds that are not installed', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))

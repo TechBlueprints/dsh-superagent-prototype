@@ -16,7 +16,7 @@ import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
-import { githubChannel } from '../../src/sources/github-trigger.ts'
+import { githubChannel } from '../../src/sources/github.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import type { Health } from '../../src/sources/host.ts'
@@ -113,7 +113,7 @@ export let server: PanelServer
 
 function resolved() {
   const accounts = server.setup.accounts
-  return accounts ? testDeployment({ repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' },
+  return accounts ? testDeployment({ forge: { repository: accounts.repository, login: accounts.agent, commitEmail: '' },
     ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
 }
 /** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
@@ -134,7 +134,7 @@ function sourceSettings(): SourceView[] {
       health: server.health[`sync:${kind.kind}`] }
     const policy = kind.policy && { fields: kind.policy.fields, explicit: kind.policy.explicit, ...kind.policy.rows
       ? { rows: kind.policy.rows(config) } : {}, ...sync ? { sync } : {} }
-    return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true,
+    return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true, multiple: !!kind.multiple, removable: false,
       value: { enabled: server.settings.sources[kind.kind]?.enabled ?? true, config },
         revision: server.revisions[`source:${kind.kind}`] ?? 0,
       restarts: SETUP_FIELDS[kind.kind] ?? [], fields: kind.fields, facts: kind.facts?.(resolved()) ?? {},
@@ -150,7 +150,7 @@ function sourceStatuses(): SourceStatusRow[] {
     const state = !enabled ? 'off' : problem || health.some(item => item.state === 'error') ? 'error' : server.setup.problem ? 'setup'
       : health.some(item => item.state === 'starting') ? 'starting' : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
     const feishu = kind.kind === 'feishu'
-    return { id: kind.kind, title: kind.title, installed: true, enabled, state, health, ...problem ? { problem } : {},
+    return { id: kind.kind, kind: kind.kind, title: kind.title, installed: true, enabled, state, health, ...problem ? { problem } : {},
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
       filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
@@ -248,8 +248,9 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
-    setup: { machine: MACHINE, problem: null, feishuProblem: null,
-      accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
+    setup: { machine: MACHINE, problem: null, feishuProblem: null, problems: {},
+      accounts: { repository: 'acme/widgets', agent: 'agent-bot', forges: [{ id: 'github', kind: 'github', host: 'github.com',
+        repository: 'acme/widgets', web: 'https://github.com', agent: 'agent-bot' }], feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
     prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github'],
@@ -343,8 +344,16 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
     return { paused: body.paused }
   } },
+  'POST triggers': { body: true, answer: () => refuse(400, 'Operator requests are not served by the panel fixture') },
+  'DELETE settings/:block': { body: true, answer: ({ params: { block } }) => refuse(400, `${block} is a kind's own instance`) },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
+    // A new instance names its kind; as on the server, saving it restarts dsh-superagent.
+    const named = (body.value as { kind?: string } | undefined)?.kind
+    if (block.startsWith('source:') && !source && named) {
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [block.slice(7)]: body.value as never } }
+      return { restarting: true, revision: 1 }
+    }
     if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')

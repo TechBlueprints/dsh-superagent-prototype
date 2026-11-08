@@ -23,7 +23,7 @@ const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !(Object.key
 /** The built-in parts a team may override, by key: both roles' parts, the Source skills, and the generated parts' templates. */
 const PART_KEYS = ['runtime/shared', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
   'runtime/dispatch', 'runtime/work', 'runtime/admission', 'runtime/handoff/orchestrator', 'runtime/handoff/worker', 'runtime/environment',
-  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github'] as const
+  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github', 'skill/gitea'] as const
 export type PartKey = typeof PART_KEYS[number]
 /** A team's text for a built-in part, and `base`, the key of the built-in text it was edited from. */
 const OverrideSchema = z.object({ text: z.string(),
@@ -67,6 +67,7 @@ export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts 
     placeholders: ['{version}', '{mode}'] },
   'skill/feishu': { roles: BOTH, text: `${sourceSkills.feishu}\n\n## CLI usage\n${cliNotes}` },
   'skill/github': { roles: BOTH, text: `${sourceSkills.github}\n\n## CLI usage\n${cliNotes}` },
+  'skill/gitea': { roles: BOTH, text: `${sourceSkills.gitea}\n\n## CLI usage\n${cliNotes}` },
 }
 /** The key of a built-in text, which an override's `base` records. */
 export const builtInBase = (text: string): string => key('prompt-built-in', text)
@@ -118,9 +119,14 @@ export function composePrompt(config: PromptConfig, role: Role, environment?: st
   return promptParts(config, role, environment, policy).map(part => part.text).join('\n\n')
 }
 export function composeSkill(config: PromptConfig, name: string): string {
-  return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : config.skills[name] ?? ''
+  return (BUNDLED_SKILLS as readonly string[]).includes(name) ? builtIn(config, `skill/${name}` as PartKey) : config.skills[name] ?? ''
 }
 
+/** The bundled Source skills, in the order Sessions list them. */
+export const BUNDLED_SKILLS = ['feishu', 'github', 'gitea'] as const
+export type BundledSkill = typeof BUNDLED_SKILLS[number]
+/** Which bundled Source skills the deployment has a Source for. */
+export type EnabledSkills = Partial<Record<BundledSkill, boolean>>
 /** An override whose built-in text changed since its `base`, with that text when kept, or whose part this version no longer has. */
 export interface DefaultChange { part: string; base?: string; previous?: string; removed?: true }
 /**
@@ -134,17 +140,25 @@ export class PromptConflict extends Error {}
  */
 export class Prompts {
   private readonly versions: Versions<PromptVersion>
+  /**
+   * @param enabled - which bundled Source skills the deployment has a Source for: `feishu` with a Feishu bot, `github` with a
+   * GitHub Source (or with no forge resolved at all), `gitea` with a Gitea Source; `true` or `false` alone sets `feishu` and
+   * leaves GitHub's on.
+   */
   constructor(private readonly store: Store, private readonly maxChars: () => number, private readonly environment: () => Variable[] | undefined,
-    private readonly feishu: () => boolean) {
+    private readonly enabled: () => boolean | EnabledSkills) {
     this.versions = new Versions(store, KV.prompts.revision, KV.prompts.version)
   }
   /** A role's prompt; the main Session's Policy section follows the settings as they are now, at each model request. */
   compose(config: PromptConfig, role: Role, variables = this.environment()): string {
     return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
   }
-  /** Returns skills to register in every Session: built-in Source skills (`feishu` only when a Feishu bot is configured) followed by team skills. */
+  /** Returns skills to register in every Session: the built-in Source skills of the Sources the deployment has, followed by team skills. */
   skills(config: PromptConfig): [string, string][] {
-    return [...this.feishu() ? ['feishu'] : [], 'github', ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
+    const value = this.enabled()
+    const enabled: EnabledSkills = typeof value === 'boolean' ? { feishu: value, github: true } : value
+    const bundled = BUNDLED_SKILLS.filter(name => enabled[name])
+    return [...bundled, ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
   }
   current(): PromptVersion {
     const revision = this.versions.revision()

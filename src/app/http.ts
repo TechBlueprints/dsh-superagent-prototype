@@ -13,6 +13,8 @@ import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
+import type { Commands } from '../infra/commands.ts'
+import type { ReceiveResult, Trigger } from '../core/index.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
@@ -25,17 +27,22 @@ import { policyHistory } from './settings-history.ts'
 import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
+import { OperatorRequestSchema, operatorTrigger } from './operator.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
 export interface HttpHost {
   readonly store: Store
+  /** Account CLIs and forge clients' commands, which an operator request reads its Issue through. */
+  readonly commands: Commands
+  /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
+  receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
-  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
+  readonly settings: Pick<Settings, 'view' | 'save' | 'remove' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
@@ -47,6 +54,7 @@ export interface HttpHost {
   readonly deployment: Deployment
   readonly setupProblem?: SetupProblem | undefined
   readonly feishuProblem?: SetupProblem | undefined
+  readonly setupProblems: Readonly<Record<string, SetupProblem>>
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
@@ -98,8 +106,19 @@ function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    problems: runtime.setupProblems,
+    accounts: resolved ? accountsView(resolved) : null,
   }
+}
+/**
+ * The resolved accounts: every forge Source instance's repository and agent account, and the Feishu bot. `repository` and
+ * `agent` name the first forge's (the GitHub Source's when it resolved), as the panel and the service script read them.
+ */
+function accountsView(resolved: Deployment) {
+  const forges = Object.values(resolved.forges).sort((a, b) => a.id === 'github' ? -1 : b.id === 'github' ? 1 : a.id.localeCompare(b.id))
+    .map(({ id, kind, host, repository, web, login }) => ({ id, kind, host, repository, web, agent: login }))
+  const feishu = resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null
+  return { repository: forges[0]?.repository ?? '', agent: forges[0]?.agent ?? '', forges, feishu }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
 export function stateView(runtime: HttpHost) {
@@ -110,7 +129,10 @@ export function stateView(runtime: HttpHost) {
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
-  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
+  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem, problems: runtime.setupProblems })
+/** Setup problems the overview lists: the one that stopped setup first, then each instance's, by instance id. */
+const setupList = (runtime: HttpHost): SetupProblem[] => [...runtime.setupProblem ? [runtime.setupProblem] : [],
+  ...Object.entries(runtime.setupProblems).sort(([a], [b]) => a.localeCompare(b)).map(([, problem]) => problem)]
 export type StateView = ReturnType<typeof stateView>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
@@ -155,7 +177,7 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
-      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
+      executorLoad(store, runtime.executor.activeCount()), setupList(runtime)),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
@@ -173,6 +195,14 @@ function routes(runtime: HttpHost): Routes {
     'POST threads/:key/unsubscribe': async ({ params }) => {
       const removed = runtime.engine.unsubscribe(params.key)
       return { removed, thread: params.key, context_delivery: await runtime.sessions.delivery(`subscription:${params.key}`) }
+    },
+    'POST triggers': async ({ body }) => {
+      if (!runtime.configured()) throw new RouteError(400, 'dsh-superagent is waiting for setup')
+      const request = OperatorRequestSchema.parse(await body())
+      // A Source that cannot take the request, or an Issue that cannot be read, refuses it.
+      return operatorTrigger({ deployment: runtime.deployment, commands: runtime.commands, sources: runtime.sources,
+        settings: () => store.settings(), receive: trigger => runtime.receive(trigger) }, request)
+        .catch((error: unknown) => { throw new RouteError(400, error instanceof Error ? error.message : String(error)) })
     },
     'POST triggers/:id/requeue': ({ params }) => {
       const queued = runtime.engine.reevaluate(params.id)
@@ -195,10 +225,17 @@ function routes(runtime: HttpHost): Routes {
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
-      const known = !block.startsWith('source:') || runtime.sources.instances().some(instance => `source:${instance.id}` === block)
-      if (!known) throw new RouteError(404, 'Source not found')
       const request = SaveRequest.parse(await body())
+      // A source block names a stored instance, or a new one whose value names its kind.
+      const named = z.object({ kind: z.string() }).loose().safeParse(request.value).success
+      const known = !block.startsWith('source:') || named || runtime.sources.instances().some(instance => `source:${instance.id}` === block)
+      if (!known) throw new RouteError(404, 'Source not found')
       return runtime.settings.save(block, request.value, request.revision, 'panel')
+    },
+    'DELETE settings/:block': async ({ params, body }) => {
+      const block = SourceBlock.parse(params.block)
+      const request = z.object({ revision: z.number().int().nonnegative() }).parse(await body())
+      return runtime.settings.remove(block.slice('source:'.length), request.revision)
     },
     'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),

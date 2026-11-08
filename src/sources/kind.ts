@@ -2,7 +2,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { z } from 'zod'
 import type { OutboundMessage, ScopeResult, Trigger } from '../core/index.ts'
-import type { Deployment } from '../deployment.ts'
+import type { Deployment, ForgeAccount } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SourceContext, SourceHost } from './host.ts'
 
@@ -22,7 +22,8 @@ export type FieldSpec =
   | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
 
 export interface VariableSpec { key: string; description: Localized }
-export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger }
+/** What a kind's variables are computed from; `ticket` is set for a ticket's environment, and `forge` then names its forge repository, if any. */
+export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger; ticket?: true; forge?: ForgeAccount }
 export interface AdmissionRowView { id: string; label: Localized | string; note: Localized; cells: { listedUnaddressed: boolean; unlistedAddressed: boolean; unlistedUnaddressed: boolean } }
 /** Policy extension for a source kind, defining allowed senders, admission table rows, and optional external roster sync. */
 export interface SourcePolicyPart<P extends Record<string, unknown>> {
@@ -41,18 +42,19 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
 }
 /** UI link for a channel address; `triggerId` names the Trigger whose own deep link is preferred when available. */
 export interface ChannelLink { url: string; label: Localized; triggerId?: string }
-export type ChannelLinks = Partial<Pick<Deployment, 'repository' | 'feishu'>>
+export type ChannelLinks = Partial<Pick<Deployment, 'forges' | 'feishu'>>
 /** Outbound messaging adapter for a source kind's threads. */
 export interface SourceChannel<C> {
   /** Whether a reply may still go to `address`; without it, every address may receive replies. */
   allowed?(address: Record<string, string>, config: C): boolean
   /**
-   * Sends a message idempotently by ID; returns `'gone'` when the target conversation no longer accepts replies.
+   * Sends a message idempotently by ID through the Source instance `host.instance` (the Channel's `source`); returns
+   * `'gone'` when the target conversation no longer accepts replies.
    * @throws when delivery failed but may succeed on a later retry.
    */
-  send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
-  /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
-  link(address: Record<string, string>, links: ChannelLinks): ChannelLink
+  send(host: Pick<SourceContext, 'commands'> & { instance: string }, message: OutboundMessage): Promise<'sent' | 'gone'>
+  /** Returns the URL and label for `address` on instance `instance` (by default the kind's own); `url` is empty when `links` lack the required deployment info. */
+  link(address: Record<string, string>, links: ChannelLinks, instance?: string): ChannelLink
 }
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message can never authorize work on its own (at most an inferred candidate). */
 export interface ContextMessage {
@@ -83,12 +85,16 @@ export interface TriggerContext {
 }
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
-  /** Stable ID; a default instance with the same ID exists when none is stored. */
+  /** Stable ID; the kind's own instance has the same ID, and exists when none is stored. */
   kind: string
+  /** Whether further instances may name this kind (`settings.sources[<kind>-…] = { kind, … }`), such as one per repository. */
+  multiple?: true
+  /** Whether the kind's own instance is off until it is saved: a further forge, whose instances setup checks only once stored. */
+  offUntilSaved?: true
   title: Localized
   description: Localized
-  /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
-  facts?(deployment: Deployment | undefined): Record<string, Localized | string>
+  /** Read-only status facts of instance `instance` (by default the kind's own) derived from `deployment` (undefined while waiting for setup), keyed by field key. */
+  facts?(deployment: Deployment | undefined, instance?: string): Record<string, Localized | string>
   /** Validates stored and submitted configuration and fills defaults. */
   schema: z.ZodType<C>
   fields: FieldSpec[]
@@ -100,8 +106,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
-  /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
-  find?(query: string): { threads: string[]; terms: string[] }
+  /** Maps a search query to candidate Thread keys of instance `instance` with configuration `config` (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
+  find?(query: string, instance: string, config?: Record<string, unknown>): { threads: string[]; terms: string[] }
   /** Returns the ID of the Trigger whose message this Trigger replies to, when derivable without a network read. */
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */

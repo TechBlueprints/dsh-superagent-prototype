@@ -22,12 +22,13 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind, pollRound } from '../src/sources/github.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
+import { GithubClient } from '../src/sources/github-client.ts'
 import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Trigger } from '../src/core/index.ts'
 import { feishuTrigger } from '../src/sources/feishu.ts'
 import { feishuChannel } from '../src/sources/feishu-trigger.ts'
-import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
+import { commentTrigger, githubChannel } from '../src/sources/github.ts'
 import { IM_WORDS } from '../src/infra/text.ts'
-import { observePull, pullOf } from '../src/sources/github-pull.ts'
+import { observePull, pullOf } from '../src/sources/forge-pull.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
 import { overview } from '../src/app/views/overview.ts'
@@ -37,13 +38,15 @@ import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets
 
 let runtime: Runtime
 const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
-const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
+const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), [...value.setupProblem ? [value.setupProblem] : [], ...Object.values(value.setupProblems)])
 let directory: string
 let controller: { create: ReturnType<typeof vi.fn>; selectModel: ReturnType<typeof vi.fn>; resolveAgent: ReturnType<typeof vi.fn>; rename: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn>; inspect: ReturnType<typeof vi.fn> }
 type RegisteredTool = { name: string; output: { render: (args: unknown, result: unknown) => unknown }; execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
 let tools: Map<string, Map<string, RegisteredTool>>
-type Section = { name: string; text: (context: { signal?: AbortSignal }) => string; interpolate?: boolean }
+type Section = { name: string; order?: number; text: (context: { signal?: AbortSignal }) => string; interpolate?: boolean }
 let sections: Map<string, Section>
+/** Every section each Session registered, in order (`sections` holds its last, the policy section). */
+let registered: Map<string, Section[]>
 type Guard = (execution?: { name: string; arguments: unknown }) => string | undefined
 let guards: Map<string, Guard>
 let restricts: Map<string, unknown[]>
@@ -156,6 +159,7 @@ beforeEach(async () => {
   agents = new Map()
   tools = new Map()
   sections = new Map()
+  registered = new Map()
   guards = new Map()
   restricts = new Map()
   deliveries = vi.fn()
@@ -181,7 +185,9 @@ beforeEach(async () => {
         }),
         guard: vi.fn((check: Guard) => { guards.set(sessionId, check); return () => {} }) })
       agentCtx.reflect.provide('skills', { register: () => () => {} })
-      agentCtx.reflect.provide('systemPrompt', { section: (spec: Section) => { sections.set(sessionId, spec); return () => {} } })
+      agentCtx.reflect.provide('systemPrompt', { section: (spec: Section) => {
+        sections.set(sessionId, spec); registered.set(sessionId, [...registered.get(sessionId) ?? [], spec]); return () => {}
+      } })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
         // A pending message taken out, as DSH's inbox does by its id.
         remove: (id: string) => [inbox.nextTurn, inbox.nextStep].some(list => {
@@ -478,7 +484,7 @@ it('relays an allowed sender\'s mention in a new Issue as an explicit candidate 
     subject: { url: 'https://api.github.com/repos/acme/widgets/issues/12', type: 'Issue', title: issue.title } }
   vi.spyOn(Commands.prototype, 'run').mockResolvedValue(`HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify([notification])}`)
   vi.spyOn(Commands.prototype, 'gh').mockResolvedValue(issue)
-  vi.spyOn(Commands.prototype, 'pages').mockResolvedValue([])
+  vi.spyOn(GithubClient.prototype, 'pages').mockResolvedValue([])
   runtime.store.set('github-since', '2026-09-08T23:59:00.000Z')
   await pollRound(runtime.context(githubKind))
   await runtime.idle()
@@ -493,7 +499,7 @@ it('ignores an allowed sender\'s new Issue that does not mention the agent, and 
       subject: { url: `https://api.github.com/repos/acme/widgets/issues/${number}`, type: 'Issue', title: issue.title } }
     vi.spyOn(Commands.prototype, 'run').mockResolvedValue(`HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify([notification])}`)
     vi.spyOn(Commands.prototype, 'gh').mockResolvedValue(issue)
-    vi.spyOn(Commands.prototype, 'pages').mockResolvedValue([])
+    vi.spyOn(GithubClient.prototype, 'pages').mockResolvedValue([])
     runtime.store.set('github-since', '2026-09-08T23:59:00.000Z')
     await pollRound(runtime.context(githubKind))
     await runtime.idle()
@@ -1025,6 +1031,16 @@ it('tells both roles the execution environment through a generated prompt sectio
   const { ticket, sessionId } = await acceptedTicket()
   expect(sections.get(sessionId)!.text({})).toContain(`- DSH_SUPERAGENT_DIR = ${JSON.stringify(ticket.execution!.directory)}`)
   expect(sections.get(runtime.masterId)!.text({})).not.toContain('DSH_SUPERAGENT_DIR')
+  // A ticket names its forge repository, which is the only forge here, and the GitHub Source's own variables stay filled.
+  for (const line of ['- DSH_SUPERAGENT_FORGE = "github"', '- DSH_SUPERAGENT_FORGE_SOURCE = "github"', '- DSH_SUPERAGENT_FORGE_CLI = "gh"',
+    '- DSH_SUPERAGENT_REPOSITORY = "acme/widgets"', '- DSH_SUPERAGENT_REPOSITORY_URL = "https://github.com/acme/widgets.git"',
+    '- DSH_SUPERAGENT_ACCOUNT = "agent-bot"', '- DSH_SUPERAGENT_GITHUB_REPOSITORY = "acme/widgets"']) expect(sections.get(sessionId)!.text({})).toContain(line)
+  expect(section.text).not.toContain('DSH_SUPERAGENT_FORGE')
+  // Each Session's system prompt starts with the line naming it: the worker's in a section of its own before every other.
+  const marker = registered.get(sessionId)![0]!
+  expect(marker).toMatchObject({ name: 'dsh-superagent-session', order: Number.MIN_SAFE_INTEGER })
+  expect(marker.text({})).toBe(`[dsh-superagent session role=worker ticket=${ticket.id} name=${ticket.execution!.name}]`)
+  expect(sections.get(runtime.masterId)!.text({}).split('\n')[0]).toBe('[dsh-superagent session role=main ticket=- name=-]')
   const next = await restart({}, { feishu: null })
   await next.ready
   expect(Object.keys(next.prompts.preview(next.prompts.current().config).skills)).not.toContain('feishu')

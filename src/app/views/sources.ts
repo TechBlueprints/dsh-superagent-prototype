@@ -13,11 +13,11 @@ export type HealthMap = Record<string, Health>
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
   const kind = sources.kind(instance.kind)
   const starting: Health = { state: 'starting', detail: '' }
-  const parts = (kind?.health ?? []).map(name => {
+  const parts = sources.healthNames(instance.id).map(name => {
     const entry = health[name]
     return { name, ...(!entry || (instance.enabled && entry.code === 'sourceOff') ? starting : entry) }
   })
-  return { id: instance.id, title: kind?.title ?? { zh: instance.id, en: instance.id }, health: parts }
+  return { id: instance.id, kind: instance.kind, title: kind?.title ?? { zh: instance.id, en: instance.id }, health: parts }
 }
 export interface SetupState {
   /** Resolved deployment facts; undefined while waiting for initial setup. */
@@ -26,8 +26,11 @@ export interface SetupState {
   problem?: SetupProblem | undefined
   /** Feishu bot check failure that pauses only the Feishu Source. */
   feishuProblem?: SetupProblem | undefined
+  /** Account check failures that pause only their Source instance, by instance id. */
+  problems?: Readonly<Record<string, SetupProblem>> | undefined
 }
-export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
+export const problemOf = (id: string, setup: SetupState) =>
+  [setup.problem, setup.problems?.[id], setup.feishuProblem].find(problem => problem?.place === id)
 /** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {

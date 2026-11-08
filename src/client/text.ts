@@ -31,7 +31,8 @@ function label(t: T, reason: Reason): string {
   if (/^\w*Error\b/.test(written)) { const first = written.split('\n')[0]!; return first.length > 140 ? `${first.slice(0, 140)}…` : first }
   return written
 }
-export const setupText = (t: T, problem: Pick<SetupProblem, 'code' | 'values'>): string => t(`setup.${problem.code}`, problem.values)
+/** A setup problem in the interface language; `{forge}` names GitHub unless the problem's values name another forge, as on the host. */
+export const setupText = (t: T, problem: Pick<SetupProblem, 'code' | 'values'>): string => t(`setup.${problem.code}`, { forge: 'GitHub', ...problem.values })
 export const healthText = (t: T, health: Pick<Health, 'detail' | 'code' | 'values'>): string =>
   health.code ? t(`healthCode.${health.code}` as const, health.values) : health.detail
 /** Replaces Feishu and GitHub content placeholders (images, cards, media, forwards, unresolved mentions) with localized labels. */

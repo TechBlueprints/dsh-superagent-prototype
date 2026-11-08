@@ -5,17 +5,19 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
 import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
 import { runFeishu } from '../src/sources/feishu-loops.ts'
-import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
-import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
-import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
+import { commentTrigger, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/forge-trigger.ts'
+import { githubAddress, githubChannel } from '../src/sources/github.ts'
+import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/forge-pull.ts'
+import { ciCounts, ciFact, ciSummary } from '../src/sources/forge-read.ts'
 import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
 import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands, commandError } from '../src/infra/commands.ts'
+import { GithubClient } from '../src/sources/github-client.ts'
 import { HealthBoard } from '../src/infra/health.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testForge } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SetupError, type SetupProblem } from '../src/setup.ts'
@@ -45,7 +47,8 @@ function host(overrides: Partial<SourceContextDeps> = {}) {
   const value = { ...parts, context: (kind: { kind: string; health: readonly string[] }) => sourceContextOf(parts, kind) }
   const context = sourceContextOf(parts, { kind: 'feishu', health: ['github', 'feishu', 'history'] })
   const health = overrides.sources ? healthOf.get(overrides.sources)!.all : board.all
-  return { ...value, ...context, health, store, engine, commands: parts.commands, receive, executor }
+  // One context serves both kinds' functions: the GitHub functions read the instance they poll from it, the GitHub Source's own.
+  return { ...value, ...context, instance: 'github', health, store, engine, commands: parts.commands, receive, executor }
 }
 const healthOf = new WeakMap<SourceRegistry, HealthBoard>()
 function emptyRegistry(): SourceRegistry {
@@ -378,7 +381,7 @@ describe('github source', () => {
     const comment = (id: number, reply?: number) => ({ id, body: `comment ${id}`, user: { login: 'carol', type: 'User' }, path: 'src/render.ts',
       line: 43, html_url: `https://github.com/acme/widgets/pull/9#discussion_r${id}`, created_at: `2026-09-09T00:00:0${id}Z`,
       ...reply ? { in_reply_to_id: reply } : {} })
-    vi.spyOn(h.commands, 'pages').mockResolvedValue([comment(1), comment(2, 1), comment(3), comment(4, 1)])
+    const pages = vi.spyOn(GithubClient.prototype, 'pages').mockResolvedValue([comment(1), comment(2, 1), comment(3), comment(4, 1)])
     const trigger = commentTrigger(comment(4, 1), { number: 9, isPr: true }, 'inline', 'agent-bot')
     const context = h.sources.threadContext(trigger)!
     const thread = await context.read(h.commands, 'thread')
@@ -386,6 +389,7 @@ describe('github source', () => {
     expect(thread.messages.map(message => message.id)).toEqual([1, 2, 4].map(id => `https://github.com/acme/widgets/pull/9#discussion_r${id}`))
     expect(context.messageId).toBe(thread.messages[2]!.id)
     expect((await context.read(h.commands, 'parent')).messages.map(message => message.id)).toEqual([thread.messages[0]!.id])
+    pages.mockRestore()
     h.store.close()
   })
   it('starts a CI Trigger\'s text with what failed or still runs, so its preview says it', () => {
@@ -418,7 +422,7 @@ describe('github source', () => {
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { by: 'executor', outcome: 'merged', at: '2026-09-02T00:00:00.000Z' } })
     expect(h.store.threads.get('github:9')?.subscriptions).toEqual(['t1'])
     // The notice its end gives follows the language of the source request.
-    const notices = pullEndNotices(h.store.tickets.get('t1')!, request.text, 'acme/widgets')
+    const notices = pullEndNotices(h.store.tickets.get('t1')!, request.text, testDeployment().forges)
     expect(notices).toEqual([expect.objectContaining({ kind: 'notice', channel: expect.objectContaining({ source: 'feishu' }), text: expect.stringContaining('已合并') })])
     expect(h.executor.stop).toHaveBeenCalledOnce()
     // Resumed after the merge, the ticket works on: a later look at the merged PR reports nothing again.
@@ -430,7 +434,7 @@ describe('github source', () => {
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { outcome: 'merged' } })
     expect(Date.parse(h.store.tickets.get('t1')!.ended!.at)).toBeGreaterThan(Date.parse('2026-09-03T00:00:00Z'))
     // Its notice has the id of the first one, so it goes out once.
-    expect(pullEndNotices(h.store.tickets.get('t1')!, request.text, 'acme/widgets').map(notice => notice.id)).toEqual(notices.map(notice => notice.id))
+    expect(pullEndNotices(h.store.tickets.get('t1')!, request.text, testDeployment().forges).map(notice => notice.id)).toEqual(notices.map(notice => notice.id))
     h.store.close()
   })
   it('keeps a ticket working on its other open PR when one of its PRs merges', async () => {
@@ -473,7 +477,7 @@ describe('github source', () => {
     h.store.triggers.save(request)
     h.store.tickets.save({ id: 't2', title: 'two', decisionId: 'd2', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_2' } }], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', ...pulled(12), origin: { triggerId: request.id, triggerIds: [request.id] } })
     expect(await observePull(h, endedPull(12, '2026-09-02T00:00:00Z', false))).toBe(true)
-    expect(pullEndNotices(h.store.tickets.get('t2')!, request.text, 'acme/widgets'))
+    expect(pullEndNotices(h.store.tickets.get('t2')!, request.text, testDeployment().forges))
       .toEqual([expect.objectContaining({ text: '[PR #12](https://github.com/acme/widgets/pull/12) was closed without merging.' })])
     h.store.close()
   })
@@ -849,6 +853,104 @@ describe('github source', () => {
     expect(h.store.threads.get('github:12')!.meta).toMatchObject({ title: 'Login fails', label: '#12 Login fails' })
     h.store.close()
   })
+  it('keeps the GitHub Source\'s own ids and keys as they were, and gives a further GitHub instance its own', async () => {
+    // Golden ids: what the GitHub Source has always stored, which no migration rewrites.
+    expect(issueTrigger(issue(12), 'agent-bot').id).toBe(key('github-issue', '12'))
+    expect([KV.github.since, KV.github.retries, KV.github.cursor(12), KV.github.stream('issues'), KV.github.branchCi, KV.github.ci(7)])
+      .toEqual(['github-since', 'github-retry', 'github-cursor:12', 'github-stream:issues', 'github-branch-ci', 'github-ci:7'])
+    expect([KV.forge('github').since, KV.forge('github').cursor(12), KV.forge('github').ci.prefix]).toEqual(['github-since', 'github-cursor:12', 'github-ci:'])
+    const corp = { source: 'github-corp', kind: 'github' }
+    const trigger = issueTrigger(issue(12), 'agent-bot', corp)
+    expect(trigger).toMatchObject({ id: key('github-issue', 'github-corp', '12'), source: 'github-corp', threads: [{ source: 'github-corp', id: '12' }],
+      actor: { source: 'github-corp', id: 'alice' }, channel: { source: 'github-corp', thread: 'github-corp:12' } })
+    expect(KV.forge('github-corp').cursor(12)).toBe('github-corp-cursor:12')
+    // A further instance polls its own repository on its own host into its own Threads and records.
+    const settings = SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { sources: { 'github-corp': { allowed: [{ id: 'alice' }] } } },
+      sources: { 'github-corp': { enabled: true, kind: 'github', config: { host: 'ghe.example.com', repository: 'corp/app', cli: '/opt/gh-corp' } } } })
+    const forges = { github: testForge(), 'github-corp': testForge({ id: 'github-corp', host: 'ghe.example.com', repository: 'corp/app',
+      web: 'https://ghe.example.com', api: 'https://ghe.example.com/api/v3', cli: '/opt/gh-corp' }) }
+    const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
+    store.saveSettings(settings)
+    const sources = new SourceRegistry(() => store.settings(), new HealthBoard())
+    sources.register(githubKind)
+    const commands = new Commands(() => testDeployment({ forges }), {}, new AbortController().signal)
+    const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources),
+      assessor: { request: vi.fn(async () => {}) }, executor: { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) },
+      outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+    const receive = vi.fn(async (value: Trigger) => engine.receive(value))
+    const ctx = sourceContextOf({ store, engine, outbox: { send: () => {} }, commands, sources, deployment: testDeployment({ forges }),
+      ready: Promise.resolve(), configured: () => true, receive }, githubKind, 'github-corp')
+    const argv: string[][] = []
+    vi.spyOn(commands, 'run').mockImplementation(async (program, args) => {
+      argv.push([program, ...args])
+      const path = args[1]!.replace(/^repos\/corp\/app\//, '').split('?')[0]!
+      const value = path === 'notifications' ? [{ repository: { full_name: 'corp/app' },
+        subject: { url: 'https://ghe.example.com/api/v3/repos/corp/app/issues/12', type: 'Issue' } }]
+        : path === 'issues/12' ? { ...issue(12, { html_url: 'https://ghe.example.com/corp/app/issues/12', body: '@agent-bot fix it' }) } : []
+      if (args.includes('--include')) return `HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify(value)}`
+      return JSON.stringify(args.includes('--slurp') ? [value] : value)
+    })
+    store.set(KV.forge('github-corp').since, '2026-09-08T23:59:00.000Z')
+    await pollRound(ctx)
+    expect(receive.mock.calls.map(([value]) => [value.id, value.source, value.threads[0]])).toEqual([[key('github-issue', 'github-corp', '12'),
+      'github-corp', { source: 'github-corp', id: '12' }]])
+    expect(argv.every(call => call[0] === '/opt/gh-corp' && call.slice(-2).join(' ') === '--hostname ghe.example.com')).toBe(true)
+    expect(store.threads.get('github-corp:12')?.meta).toMatchObject({ title: 'Login fails' })
+    expect(store.get(KV.forge('github-corp').cursor(12))).toBeDefined()
+    expect(store.get(KV.github.since)).toBeUndefined()
+    store.close()
+  })
+  it('polls a wildcard instance\'s account notifications into Threads of each repository it may push to', async () => {
+    const settings = SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { sources: { 'github-tb': { allowed: [{ id: 'alice' }] } } },
+      sources: { 'github-tb': { enabled: true, kind: 'github', config: { repository: 'TechBlueprints/*', cli: '/opt/gh' } } } })
+    const tb = testForge({ id: 'github-tb', repository: 'TechBlueprints/*', cli: '/opt/gh', cloneUrl: 'https://github.com/TechBlueprints/*.git' })
+    const deployment = testDeployment({ forges: { 'github-tb': tb } })
+    const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
+    store.saveSettings(settings)
+    const sources = new SourceRegistry(() => store.settings(), new HealthBoard())
+    sources.register(githubKind)
+    const commands = new Commands(() => deployment, {}, new AbortController().signal)
+    const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources),
+      assessor: { request: vi.fn(async () => {}) }, executor: { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) },
+      outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+    const receive = vi.fn(async (value: Trigger) => engine.receive(value))
+    const ctx = sourceContextOf({ store, engine, outbox: { send: () => {} }, commands, sources, deployment, ready: Promise.resolve(),
+      configured: () => true, receive }, githubKind, 'github-tb')
+    const reads: string[] = []
+    const notified = (repository: string, number: number) => ({ repository: { full_name: repository },
+      subject: { url: `https://api.github.com/repos/${repository}/issues/${number}`, type: 'Issue' } })
+    vi.spyOn(commands, 'run').mockImplementation(async (_program, args) => {
+      reads.push(args[1]!)
+      const path = args[1]!.split('?')[0]!
+      const value = path === 'notifications' ? [notified('TechBlueprints/widgets', 12), notified('TechBlueprints/readonly', 3), notified('Other/repo', 4)]
+        : path === 'repos/TechBlueprints/widgets' ? { permissions: { push: true } } : path === 'repos/TechBlueprints/readonly' ? { permissions: { push: false } }
+          : path === 'repos/TechBlueprints/widgets/issues/12' ? issue(12, { html_url: 'https://github.com/TechBlueprints/widgets/issues/12', body: '@agent-bot fix it' }) : []
+      if (args.includes('--include')) return `HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify(value)}`
+      return JSON.stringify(args.includes('--slurp') ? [value] : value)
+    })
+    store.set(KV.forge('github-tb').since, '2026-09-08T23:59:00.000Z')
+    await pollRound(ctx)
+    // The account's notifications, each repository's push access once, and the one Issue of a repository the agent may push to.
+    expect(reads.map(read => read.split('?')[0])).toEqual(['notifications', 'repos/TechBlueprints/readonly', 'repos/TechBlueprints/widgets',
+      'repos/TechBlueprints/widgets/issues/12', 'repos/TechBlueprints/widgets/issues/12/comments'])
+    const thread = 'TechBlueprints/widgets#12'
+    expect(receive.mock.calls.map(([value]) => [value.id, value.threads[0], value.channel?.thread, value.channel?.address, value.meta.repository])).toEqual([[
+      key('github-issue', 'github-tb', 'TechBlueprints/widgets', '12'), { source: 'github-tb', id: thread }, `github-tb:${thread}`,
+      { number: '12', url: 'https://github.com/TechBlueprints/widgets/issues/12', repository: 'TechBlueprints/widgets' }, 'TechBlueprints/widgets']])
+    expect(store.threads.get(`github-tb:${thread}`)?.meta).toMatchObject({ title: 'Login fails', label: 'TechBlueprints/widgets#12 Login fails' })
+    expect(store.get(KV.forge('github-tb').cursor(thread))).toBeDefined()
+    expect(sources.healthEntries(['github-tb']).get('github-tb')?.get()?.detail).toContain('skipped, no push access: TechBlueprints/readonly')
+    // A page of one of its repositories names its Thread (and the GitHub Source's own, which names no repository here, its 12); a bare
+    // number names none of a wildcard's.
+    expect(sources.find('https://github.com/TechBlueprints/widgets/pull/12')).toEqual({ threads: ['github:12', `github-tb:${thread}`], terms: [] })
+    expect(sources.find('#12')).toEqual({ threads: ['github:12'], terms: [] })
+    // A reply goes to the repository its address names.
+    const posted: string[][] = []
+    vi.spyOn(commands, 'gh').mockImplementation(async args => { posted.push(args as string[]); return args.includes('--slurp') ? [[]] : {} })
+    expect(await sources.send({ id: 'r1', kind: 'reply', text: 'On it', channel: receive.mock.calls[0]![0].channel! }, commands)).toBe('sent')
+    expect(posted.map(args => args[1])).toEqual(['repos/TechBlueprints/widgets/issues/12/comments', 'repos/TechBlueprints/widgets/issues/12/comments'])
+    store.close()
+  })
   it('takes in a comment on an earlier Issue from its notification, without the Issue body', async () => {
     const h = host()
     const url = 'https://github.com/acme/widgets/issues/12'
@@ -1023,7 +1125,7 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(pollFailure(1, 3, eof)).toBeUndefined()
   expect(pollFailure(2, 3, eof)).toBeUndefined()
   expect(pollFailure(3, 3, eof)).toEqual({ state: 'error', detail: '3 consecutive failed polls; last: Error: Get "https://api.github.com/x": EOF', code: 'pollFailures', values: { count: '3', error: 'Error: Get "https://api.github.com/x": EOF' } })
-  expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
+  expect(githubKind.schema.parse({})).toEqual({ host: 'github.com', repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
     observePulls: false, observeComments: false, observeCi: false })
 })
 describe('feishu event consumer', () => {

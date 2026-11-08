@@ -2,8 +2,10 @@
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
-import { claimPull, readPull } from '../../sources/github-pull.ts'
+import { claimPull, readPull } from '../../sources/forge-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
+import type { ForgeAccount } from '../../deployment.ts'
+import { isWildcard } from '../../sources/forge-client.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
 import { reportRelay, threadFollowedNotice } from '../notices.ts'
@@ -15,13 +17,17 @@ export interface ExecutorToolsHost {
   readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
-  /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
-  readonly github: SourceContext
+  /**
+   * The ticket's repository (`forgeOf`) and the context of its forge Source instance, whose pull-request rules govern claiming
+   * a reported PR; none when the ticket is on no forge.
+   */
+  forge(ticket: Ticket): { context: SourceContext; account: ForgeAccount } | undefined
   sendReplies(): Promise<void>
 }
 
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
+  const login = host.forge(ticket)?.account.login
   return [
     readTool('Read one page of a resource of this ticket that the resource parameter lists. Follow next_offset, and next_resource where a page names one.',
       true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal)),
@@ -79,16 +85,20 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         summary: z.string().min(1),
         human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.'),
         question_for_trigger_id: z.string().optional().describe('With human_action: the human message that raised the question, which is asked where that person wrote.'),
-        pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
+        pr_number: z.number().int().positive().nullish().describe(`The ticket's PR in DSH_SUPERAGENT_REPOSITORY: its source PR, or one by ${login ?? 'the agent account'} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
       }).strict(),
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
-        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
+        // The repository may have become known since the tools were registered, such as by a PR the ticket follows now.
+        const repository = args.pr_number != null ? host.forge(current) : undefined
+        if (args.pr_number != null && !repository) throw new Error('This ticket is on no forge repository (DSH_SUPERAGENT_REPOSITORY is empty); omit pr_number')
+        const pull = args.pr_number != null && repository ? await readPull(repository.context, args.pr_number, signal,
+          isWildcard(repository.context.deployment.forges[repository.context.instance]?.repository ?? '') ? repository.account.repository : undefined) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
-          const refused = pull && claimPull(host.github, ticketId, pull)
+          const refused = pull && repository && claimPull(repository.context, ticketId, pull)
           if (refused) throw new Error(refused)
           const report = { state: args.state, summary: args.summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),

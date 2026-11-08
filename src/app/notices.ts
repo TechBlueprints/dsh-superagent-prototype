@@ -108,7 +108,9 @@ export function followupRelay(message: { trigger_id: string },
 export function resultRelay(ticket: Ticket, state: string, text: string, replyTo?: string): Relay {
   const id = key('worker-result', ticket.id, ticket.updatedAt, text)
   const summary = text.length > 600 ? { summary: text.slice(0, 600), chars: text.length } : { summary: text }
-  const report = { kind: 'worker_report', ticket: brief(ticket), trigger_id: ticket.origin.triggerId, state, ...replyTo ? { answer_to: replyTo } : {},
+  // A worker's answer reaches no one until the main Session sends it; the card says so, as a live run's router took it as sent.
+  const answer = replyTo ? { answer_to: replyTo, next_action: `Nothing is sent yet: answer with orchestrator_reply purpose=answer trigger_id=${replyTo}.` } : {}
+  const report = { kind: 'worker_report', ticket: brief(ticket), trigger_id: ticket.origin.triggerId, state, ...answer,
     ...summary, read: `ticket/${ticket.id}/result` }
   return { id: `report:${id}`, text: JSON.stringify(report) }
 }

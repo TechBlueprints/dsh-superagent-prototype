@@ -92,6 +92,13 @@ function SourcePart({ source, part, saved, dirty, onChange, reload }: {
       onChange={admission => onChange({ ...part, admission })} />
       : <div className="dt-field"><span className="dt-field-head">{t('explicitRequest')}</span><span>{localized(t,
         policy.explicit)}</span></div>}
+    <Field label={t('followUps')} hint={t('followUpsHint')}>
+      <select className="dt-select" value={part.followUps === 'listed' ? 'listed' : 'any'}
+        onChange={event => { const { followUps: _followUps, ...rest } = part; onChange(event.target.value === 'listed' ? { ...rest, followUps: 'listed' } : rest) }}>
+        <option value="any">{t('followUps.any')}</option>
+        <option value="listed">{t('followUps.listed')}</option>
+      </select>
+    </Field>
   </div>
 }
 

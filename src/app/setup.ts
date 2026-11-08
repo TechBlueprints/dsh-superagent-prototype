@@ -1,7 +1,8 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, setupValues, forgeInstances, resolveForge, resolveForges, resolveFeishuBot, workerProbe, type Deployment, type ForgeKind,
+  type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -13,8 +14,19 @@ export interface SetupHost {
   restart(): void
 }
 
-const setupFields = (settings: Settings) =>
-  JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
+/**
+ * What setup reads of the settings: each Source instance's setup fields (`SETUP_FIELDS` of its kind) by instance id, the
+ * kinds' own instances whether stored or not, and which forge instances setup resolves.
+ */
+const setupFields = (settings: Settings) => {
+  const ids = [...new Set([...Object.keys(SETUP_FIELDS), ...Object.keys(settings.sources)])].sort()
+  const fields = ids.flatMap(id => {
+    const kind = settings.sources[id]?.kind ?? id, keys = SETUP_FIELDS[kind]
+    const values = setupValues(kind, settings.sources[id]?.config)
+    return keys ? [[id, kind, ...keys.map(key => values[key] ?? '')]] : []
+  })
+  return JSON.stringify([fields, forgeInstances(settings).map(instance => instance.id)])
+}
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
 /**
@@ -23,8 +35,12 @@ export const setupChanged = (before: Settings, after: Settings): boolean => setu
  */
 export class Setup {
   private resolved?: Deployment
+  /** The problem that keeps setup from completing, which stops every Source. */
   problem?: SetupProblem
-  feishuProblem?: SetupProblem
+  /** Why a Source instance's account did not resolve though the rest of setup went on, by instance id; that instance is paused. */
+  readonly problems: Record<string, SetupProblem> = {}
+  /** Why the Feishu bot is unavailable even though the Feishu Source names a CLI. */
+  get feishuProblem(): SetupProblem | undefined { return this.problems.feishu }
   /** PATH with the worker shim directory removed so the host's own CLI calls invoke the real binaries. */
   private readonly path: string
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
@@ -41,7 +57,7 @@ export class Setup {
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
-  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
+  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`problems` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
     catch (error) {
@@ -52,7 +68,7 @@ export class Setup {
   }
   /** Trigger a restart to re-run setup, refusing if setup and Feishu are already healthy so running assignments are not interrupted. */
   check(): void {
-    if (this.configured() && !this.feishuProblem) throw new UserError('setupComplete')
+    if (this.configured() && !Object.keys(this.problems).length) throw new UserError('setupComplete')
     this.restart()
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
@@ -60,9 +76,14 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
-    const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
-      : resolveDeployment(machine, settings.sources.github?.config, this.probe())
-    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
+    const id = block.slice('source:'.length), stored = settings.sources[id]
+    const kind = stored?.kind ?? id
+    // A switched-off forge instance is not resolved, so its accounts are checked when it is switched on.
+    const forge = forgeInstances(settings).find(instance => instance.id === id)
+    const check = kind === 'feishu' ? resolveFeishuBot(machine, stored?.config, this.probe())
+      : forge ? resolveForge(machine, forge, this.probe()) : stored?.enabled === false ? Promise.resolve()
+        : SETUP_FIELDS[kind] ? resolveForge(machine, { id, kind: kind as ForgeKind, config: stored?.config }, this.probe()) : Promise.resolve()
+    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === id) throw error })
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -76,10 +97,21 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    const instances = forgeInstances(settings)
+    const { forges, problems } = await resolveForges(machine, instances, probe)
+    // Without any forge, nothing can be worked on: the first forge's problem (or that none is on) stops setup.
+    if (!Object.keys(forges).length) {
+      const first = instances.map(instance => problems[instance.id]).find(problem => problem !== undefined)
+      throw first ? new SetupError(first.code, first.values, first.place) : new SetupError('noForge')
+    }
+    for (const [id, problem] of Object.entries(problems)) {
+      this.problems[id] = problem
+      context.logger.warn('dsh-superagent leaves the %s Source out: %s', id, problem.detail)
+    }
+    const deployment = { ...machine, forges }
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
-      this.feishuProblem = error.problem
+      this.problems.feishu = error.problem
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
