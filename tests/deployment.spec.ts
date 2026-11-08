@@ -92,6 +92,9 @@ describe('setup', () => {
       'github-other': setupError('github-other', 'forgeCliDiffers', { source: 'github-other', other: 'github', shim: 'gh' }) })
     // With no forge on, setup reads the GitHub Source's accounts as it always has.
     expect(forgeInstances({ sources: { github: { enabled: false, config: {} } } }).map(instance => instance.id)).toEqual(['github'])
+    // One that saved another forge's instance and switched every forge off has none, which setup names as noForge.
+    expect(forgeInstances({ sources: { github: { enabled: false, config: {} },
+      'gitea-home': { enabled: false, kind: 'gitea', config: {} } } })).toEqual([])
   })
   it('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>

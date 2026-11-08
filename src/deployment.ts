@@ -191,7 +191,10 @@ export function forgeInstances(settings: { sources: Record<string, { enabled: bo
   const own = (['github'] as const).filter(kind => !settings.sources[kind]).map(kind => ({ id: kind, kind, config: {}, enabled: true }))
   const all = [...own, ...stored].sort((a, b) => a.id.localeCompare(b.id))
   const enabled = all.filter(instance => instance.enabled)
-  return (enabled.length ? enabled : all.filter(instance => instance.id === instance.kind)).map(({ id, kind, config }) => ({ id, kind, config }))
+  // With none on, an installation of the GitHub Source alone still has setup read it, as it always has; one that saved another
+  // forge's instance has no forge on (`noForge`), rather than a GitHub Source it switched off that names no repository.
+  const legacy = stored.every(instance => instance.kind === 'github')
+  return (enabled.length ? enabled : legacy ? all.filter(instance => instance.id === instance.kind) : []).map(({ id, kind, config }) => ({ id, kind, config }))
 }
 /** Reads a Gitea API token file: a regular file that only its owner may read, holding the token on its first line. */
 export function readTokenFile(file: string): string {
