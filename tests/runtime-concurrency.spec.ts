@@ -790,10 +790,16 @@ it('wakes an idle worker for a status request in the slot kept for a person, whi
 })
 it('tells a passing failure of the provider or the network from one that a later try would meet again', () => {
   for (const error of [Object.assign(new Error('x'), { status: 429 }), Object.assign(new Error('x'), { status: 503 }),
-    Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com')]) {
+    Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com'),
+    // A connection or stream cut mid-turn, as a model gateway's restart leaves it: the SDK's, undici's and DSH's wording.
+    'LlmError: Connection error.', Object.assign(new Error('Connection error.'), { name: 'LlmError' }),
+    new TypeError('terminated'), 'LlmError: terminated', 'terminated', new Error('other side closed')]) {
     expect(transient(error)).toBe(true)
   }
-  for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline']) {
+  for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline',
+    // `terminated` inside a message that a later try would meet again.
+    new Error('Cannot feed parser: it was terminated after exceeding the configured max buffer size. Call `reset()` to resume parsing.'),
+    new Error('bash session terminated'), new TypeError('TransformStream terminated'), 'LlmError: the request was terminated by policy']) {
     expect(transient(error)).toBe(false)
   }
 })

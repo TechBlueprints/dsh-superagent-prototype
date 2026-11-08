@@ -42,10 +42,15 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
  */
 class PrepareFailed extends Error {}
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
-  'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+  'network error', 'overloaded', 'rate limit',
+  // A connection or response stream cut mid-turn, as the OpenAI-compatible SDK (`Connection error.`) and undici (`other side
+  // closed`, a bare `terminated`) name it; `terminated` only as the whole message, as a parser that stopped after exceeding its
+  // buffer, or a tool's terminated session, would meet the same failure again.
+  'connection error', 'other side closed', '(?:^|Error:?\\s+)terminated(?:$|[\\s.])',
+  '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
 /**
  * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, or a
- * connection that was refused, reset, timed out, or could not resolve its host.
+ * connection that was refused, reset, timed out, cut mid-stream, or could not resolve its host.
  */
 export function transient(error: unknown): boolean {
   const status = (error as { status?: unknown } | undefined)?.status
