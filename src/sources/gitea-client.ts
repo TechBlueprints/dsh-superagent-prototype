@@ -56,7 +56,7 @@ function utc<T>(value: T): T {
 const ReviewSchema = z.looseObject({ id: z.number(), state: z.string().nullish(), submitted_at: z.string().nullish(), updated_at: z.string().nullish(),
   body: z.string().nullish(), user: z.unknown(), html_url: z.string().nullish(), commit_id: z.string().nullish() })
 const ReviewCommentSchema = z.looseObject({ id: z.number(), path: z.string().nullish(), position: z.number().nullish(),
-  original_position: z.number().nullish(), created_at: z.string().nullish() })
+  original_position: z.number().nullish(), created_at: z.string().nullish(), resolver: z.unknown().nullish() })
 const NotificationSchema = z.looseObject({ repository: z.looseObject({ full_name: z.string() }),
   subject: z.looseObject({ url: z.string().nullish(), type: z.string().nullish() }) })
 const StatusSchema = z.looseObject({ id: z.number().optional(), context: z.string(), status: z.string().optional(), state: z.string().optional() })
@@ -190,7 +190,10 @@ export class GiteaClient implements ForgeClient {
     const page = (id: number) => `${this.account.web}/${this.account.repository}/pulls/${number}/files#issuecomment-${id}`
     return validItems(CommentSchema, valid.map(comment => {
       const root = roots.get(place(comment))
-      return { ...comment, html_url: page(comment.id), line: comment.position || null, original_line: comment.original_position || null,
+      // Resolving a comment moves its `updated_at`, which would read as an edit and deliver it again; a resolved comment keeps
+      // the time it was written (an edit made after it was resolved is not delivered).
+      return { ...comment, html_url: page(comment.id), ...comment.resolver ? { updated_at: comment.created_at } : {},
+        line: comment.position || null, original_line: comment.original_position || null,
         ...root !== undefined && root !== comment.id ? { in_reply_to_id: root } : {} }
     }), tally)
   }

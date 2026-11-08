@@ -95,12 +95,16 @@ describe('Gitea client', () => {
     gitea({ [`GET ${REPO}/pulls/7/reviews`]: paged([{ id: 1, state: 'REQUEST_CHANGES', body: 'Fix it', user: user('carol'), submitted_at: '2026-11-07T10:00:00Z' },
       { id: 2, state: 'COMMENT', body: '', user: user('dave'), submitted_at: '2026-11-07T10:05:00Z' }, { id: 3, state: 'PENDING', body: '', user: user('dave') }]),
     [`GET ${REPO}/pulls/7/reviews/1/comments`]: [comment(11, 'a.ts', 4, 1), comment(12, 'b.ts', 0, 2, 4)],
-    [`GET ${REPO}/pulls/7/reviews/2/comments`]: [comment(21, 'a.ts', 4, 6), comment(22, 'b.ts', 4, 7)] })
+    // Resolving 22 moved its updated_at (as Gitea 28 does) without changing it.
+    [`GET ${REPO}/pulls/7/reviews/2/comments`]: [comment(21, 'a.ts', 4, 6), { ...comment(22, 'b.ts', 4, 7), updated_at: '2026-11-07T11:00:00Z', resolver: user('ziggy') }] })
     const inline = await client().comments(7, 'inline')
     expect(inline.map(item => [item.id, item.line, item.original_line, item.in_reply_to_id])).toEqual([[11, 4, null, undefined],
       [12, null, 4, undefined], [21, 4, null, 11], [22, 4, null, undefined]])
     // Each is addressed on the files page, so a reply to it goes to its review thread.
     expect(inline.map(item => giteaAddress(item.html_url ?? '', 'home/app', account)?.discussion)).toEqual([11, 12, 21, 22])
+    // A resolved comment keeps the time it was written, so resolving it is not read as an edit.
+    expect(inline.find(item => item.id === 22)?.updated_at).toBe('2026-11-07T10:07:00Z')
+    expect((await client().comments(7, 'inline', '2026-11-07T10:30:00Z')).map(item => item.id)).toEqual([])
     expect((await client().reviewThread(7, 21)).map(item => item.id)).toEqual([11, 21])
     expect((await client().comments(7, 'review')).map(item => [item.id, item.state])).toEqual([[1, 'CHANGES_REQUESTED'], [2, 'COMMENTED']])
     expect(await client().reviewComment(7, 21)).toEqual({ id: 21, in_reply_to_id: 11 })
