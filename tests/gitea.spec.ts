@@ -143,9 +143,12 @@ describe('Gitea client', () => {
     expect(giteaKind.channel!.link({ number: '7' }, { forges: { gitea: account } }, 'gitea'))
       .toEqual({ url: 'https://git.example.com/home/app/issues/7', label: { zh: 'Gitea #7', en: 'Gitea #7' } })
     // Gitea 28 answers a deleted Issue's comments with 500 and the Issue with 404; while the repository reads, the reply is gone.
-    gitea({ [`GET ${REPO}/issues/7/comments`]: new Response(JSON.stringify({ message: 'issue does not exist [id: 0, repo_id: 14, index: 7]' }), { status: 500 }),
-      [`GET ${REPO}`]: { full_name: 'home/app' } })
+    // (A restricted account such as the agent's gets the 500 with no message.)
+    gitea({ [`GET ${REPO}/issues/7/comments`]: new Response('Internal Server Error', { status: 500 }), [`GET ${REPO}`]: { full_name: 'home/app' } })
     expect(await send('m3')).toBe('gone')
+    // A 500 on an Issue that still reads is an outage: the reply waits for the next round.
+    gitea({ [`GET ${REPO}/issues/7/comments`]: new Response('Internal Server Error', { status: 500 }), [`GET ${REPO}/issues/7`]: issue(7) })
+    await expect(send('m4')).rejects.toThrow('HTTP 500')
   })
 })
 

@@ -256,13 +256,14 @@ export class GiteaClient implements ForgeClient {
     return response.text()
   }
   /**
-   * Gitea 28 answers a deleted Issue's comment list with 500 "issue does not exist" (and its page with 404), so a failed read
-   * or post of its comments rereads the Issue, which is 410 when it was deleted and the repository still reads.
+   * Gitea 28 answers a deleted Issue's comment list with 500 (naming the missing Issue to an admin, and nothing to a restricted
+   * account) and its page with 404, so a read or post of its comments failing with 404 or 500 rereads the Issue, which is 410
+   * when it was deleted and the repository still reads; an Issue that reads keeps the original error.
    */
   private async onIssue<T>(number: number, read: () => Promise<T>): Promise<T> {
     try { return await read() }
     catch (error) {
-      if (!(error instanceof ForgeError) || !(error.code === 404 || (error.code === 500 && /issue does not exist/i.test(error.message)))) throw error
+      if (!(error instanceof ForgeError) || (error.code !== 404 && error.code !== 500)) throw error
       await this.issue(number)
       throw error
     }
