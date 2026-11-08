@@ -92,7 +92,9 @@ describe('Gitea client', () => {
       path, position, original_position: original, diff_hunk: '@@ -1 +1 @@', created_at: `2026-11-07T10:0${minute}:00Z`, updated_at: `2026-11-07T10:0${minute}:00Z`,
       // Gitea 28's own address of an inline comment is the conversation's.
       html_url: `https://git.example.com/home/app/pulls/7#issuecomment-${id}` })
-    gitea({ [`GET ${REPO}/pulls/7/reviews`]: paged([{ id: 1, state: 'REQUEST_CHANGES', body: 'Fix it', user: user('carol'), submitted_at: '2026-11-07T10:00:00Z' },
+    // Review 1 was dismissed by carol's later approval, which moved its updated_at (as Gitea 28 does).
+    gitea({ [`GET ${REPO}/pulls/7/reviews`]: paged([{ id: 1, state: 'REQUEST_CHANGES', body: 'Fix it', user: user('carol'), submitted_at: '2026-11-07T10:00:00Z',
+      updated_at: '2026-11-07T12:00:00Z', dismissed: true, stale: true },
       { id: 2, state: 'COMMENT', body: '', user: user('dave'), submitted_at: '2026-11-07T10:05:00Z' }, { id: 3, state: 'PENDING', body: '', user: user('dave') }]),
     [`GET ${REPO}/pulls/7/reviews/1/comments`]: [comment(11, 'a.ts', 4, 1), comment(12, 'b.ts', 0, 2, 4)],
     // Resolving 22 moved its updated_at (as Gitea 28 does) without changing it.
@@ -106,7 +108,8 @@ describe('Gitea client', () => {
     expect(inline.find(item => item.id === 22)?.updated_at).toBe('2026-11-07T10:07:00Z')
     expect((await client().comments(7, 'inline', '2026-11-07T10:30:00Z')).map(item => item.id)).toEqual([])
     expect((await client().reviewThread(7, 21)).map(item => item.id)).toEqual([11, 21])
-    expect((await client().comments(7, 'review')).map(item => [item.id, item.state])).toEqual([[1, 'CHANGES_REQUESTED'], [2, 'COMMENTED']])
+    expect((await client().comments(7, 'review')).map(item => [item.id, item.state, item.updated_at])).toEqual([[1, 'CHANGES_REQUESTED', '2026-11-07T10:00:00Z'],
+      [2, 'COMMENTED', '2026-11-07T10:05:00Z']])
     expect(await client().reviewComment(7, 21)).toEqual({ id: 21, in_reply_to_id: 11 })
     expect(giteaAddress('https://git.example.com/home/app/pulls/7/files#issuecomment-21', 'home/app', account)).toEqual({ number: 7, pr: true, discussion: 21 })
     expect(giteaAddress('https://git.example.com/home/app/pulls/7#issuecomment-21', 'home/app', account)).toEqual({ number: 7, pr: true })

@@ -164,7 +164,9 @@ export class GiteaClient implements ForgeClient {
   private async reviews(number: number): Promise<z.infer<typeof ReviewSchema>[]> {
     return validItems(ReviewSchema, await this.list(`pulls/${number}/reviews`)).flatMap(review => {
       const state = REVIEW_STATES[review.state ?? '']
-      return state ? [utc({ ...review, state })] : []
+      // A submitted review's body cannot change, but Gitea moves its updated_at when a later review of the same reviewer marks
+      // it stale and dismissed, which would read as an edit and deliver it again; its version is when it was submitted.
+      return state ? [utc({ ...review, state, updated_at: review.submitted_at ?? review.updated_at })] : []
     })
   }
   /**
