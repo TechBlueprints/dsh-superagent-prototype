@@ -764,6 +764,7 @@ const TEXT = {
   'setup.tokenFileUnset': ['{forge} 来源没有设置令牌文件。', SETUP_PROBLEMS.tokenFileUnset[1]],
   'setup.tokenFileUnreadable': ['令牌文件 {file} 读不了，或者其他用户也能读；它必须是权限 0600 或更严的文件。', SETUP_PROBLEMS.tokenFileUnreadable[1]],
   'setup.tokenRejected': ['{host} 不接受 {file} 里的令牌。', SETUP_PROBLEMS.tokenRejected[1]],
+  'setup.tokenScopeMissing': ['{file} 里的令牌读不了 @{account} 在 {host} 上的通知；给它 {scope} 权限，以及 write:issue、write:repository 和 read:user。', SETUP_PROBLEMS.tokenScopeMissing[1]],
   'setup.cliAccountDiffers': ['智能体的 {forge} CLI 以 @{login} 行事，令牌文件读到的是 @{account}；把 CLI 登录到 @{account}。', SETUP_PROBLEMS.cliAccountDiffers[1]],
   'setup.feishuCliFailed': ['机器人的 lark-cli 不可用。', SETUP_PROBLEMS.feishuCliFailed[1]],
   'setup.feishuNoApp': ['机器人的 lark-cli 的 auth status 没有报告应用。', SETUP_PROBLEMS.feishuNoApp[1]],

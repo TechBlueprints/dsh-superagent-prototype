@@ -89,6 +89,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   kind: string
   /** Whether further instances may name this kind (`settings.sources[<kind>-…] = { kind, … }`), such as one per repository. */
   multiple?: true
+  /** Whether the kind's own instance is off until it is saved: a further forge, whose instances setup checks only once stored. */
+  offUntilSaved?: true
   title: Localized
   description: Localized
   /** Read-only status facts of instance `instance` (by default the kind's own) derived from `deployment` (undefined while waiting for setup), keyed by field key. */

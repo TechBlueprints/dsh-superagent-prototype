@@ -235,11 +235,17 @@ export async function resolveGitea(machine: Machine, gitea: unknown, probe: Prob
   const get = async (resource: string) => {
     const response = await http(`${api}/${resource}`, { headers: { authorization: `token ${token}`, accept: 'application/json' },
       signal: AbortSignal.timeout(60_000) })
-    return { status: response.status, body: response.ok ? await response.json() as unknown : undefined }
+    const body = await response.json().catch(() => undefined) as unknown
+    return { status: response.status, body: response.ok ? body : undefined,
+      message: response.ok ? '' : z.looseObject({ message: z.string() }).safeParse(body).data?.message ?? `HTTP ${response.status}` }
   }
   const user = await get('user').catch((error: unknown) => fail('tokenRejected', { host, file: tokenFile, output: reason(error) }))
   if (user.status === 401 || user.status === 403) fail('tokenRejected', { host, file: tokenFile })
   const agent = GiteaUser.safeParse(user.body).data ?? fail('agentCliNoAccount')
+  // Polling starts from the account's notifications, which a token without the read:notification scope cannot read.
+  const notifications = await get('notifications?limit=1').catch((error: unknown) => fail('tokenScopeMissing',
+    { host, file: tokenFile, account: agent.login, scope: 'read:notification', output: reason(error) }))
+  if (notifications.status !== 200) fail('tokenScopeMissing', { host, file: tokenFile, account: agent.login, scope: 'read:notification', output: notifications.message })
   let repository: string
   if (remote.endsWith('/*')) {
     // A wildcard names every repository of an owner, an organization or a user; push access is read per repository when it first notifies.

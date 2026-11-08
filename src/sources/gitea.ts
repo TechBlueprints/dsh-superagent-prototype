@@ -26,6 +26,7 @@ const GiteaConfigSchema = GiteaAccountsSchema.extend({
 export type GiteaConfig = z.infer<typeof GiteaConfigSchema> & ForgeConfig
 export const giteaKind: SourceKind<GiteaConfig> = forgeKind<GiteaConfig>({
   kind: SOURCE,
+  offUntilSaved: true,
   title: { zh: 'Gitea', en: 'Gitea' },
   description: { zh: '智能体的 Gitea 账号；接收仓库里发给它的通知、已订阅 Issue 与 PR 的讨论、CI 状态变化和 PR 合并关闭。', en: 'The agent\'s Gitea account; receives notifications to it in the repository, discussion on subscribed Issues and PRs, CI status changes, and PR merge or close.' },
   schema: GiteaConfigSchema as unknown as z.ZodType<GiteaConfig>,

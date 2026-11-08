@@ -25,6 +25,7 @@ export const SETUP_PROBLEMS = {
   tokenFileUnset: ['gitea', 'The {forge} Source names no token file.'],
   tokenFileUnreadable: ['gitea', 'The token file {file} cannot be read, or other users may read it; it must be a file of mode 0600 or stricter.'],
   tokenRejected: ['gitea', '{host} did not accept the token in {file}.'],
+  tokenScopeMissing: ['gitea', 'The token in {file} cannot read @{account}\'s notifications on {host}; give it the {scope} scope, with write:issue, write:repository and read:user.'],
   cliAccountDiffers: ['gitea', 'The agent {forge} CLI acts as @{login}, and the token file reads @{account}; sign the CLI in to @{account}.'],
   feishuCliFailed: ['feishu', 'The bot lark-cli does not work.'],
   feishuNoApp: ['feishu', 'auth status of the bot lark-cli did not report the app.'],

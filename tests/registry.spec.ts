@@ -66,6 +66,15 @@ describe('Source registry', () => {
     expect(() => sources.validate('other', { enabled: true, kind: 'probe', config: {} })).toThrow('cannot name an instance')
     expect(() => sources.validate('quiet-new', { enabled: true, kind: 'quiet', config: {} })).toThrow('cannot name an instance')
   })
+  it('keeps the own instance of a kind that is off until saved off while it is unstored, as setup does', () => {
+    let settings = SettingsSchema.parse({ sources: { 'probe-two': { enabled: true, kind: 'probe', config: {} } } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register({ ...probe, multiple: true, offUntilSaved: true })
+    expect(sources.instances().map(({ id, enabled }) => [id, enabled])).toEqual([['probe', false], ['probe-two', true]])
+    expect(sources.scope({ source: 'probe', meta: {} })).toEqual({ listened: false, reason: 'source_disabled' })
+    settings = SettingsSchema.parse({ sources: { probe: { enabled: true, config: {} } } })
+    expect(sources.instance('probe')?.enabled).toBe(true)
+  })
   it('validates submitted instances with the kind schema and refuses kinds that are not installed', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
     sources.register(probe)

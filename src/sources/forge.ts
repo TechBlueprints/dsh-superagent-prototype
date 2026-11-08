@@ -62,6 +62,8 @@ export interface ForgeSpec<C extends ForgeConfig> {
   policy: SourcePolicyPart<Record<string, unknown> & { allowed: { id: string; name?: string }[] }>
   /** The web hosts an Issue or PR page of an instance may be on, from its configuration (such as `github.com`). */
   host(config: Record<string, unknown>): string
+  /** Off until saved (see `SourceKind.offUntilSaved`): every forge but GitHub, whose own instance has always existed unstored. */
+  offUntilSaved?: true
   environment?: { variables: readonly VariableSpec[]; values(input: EnvironmentInput<C>): Record<string, string> }
 }
 const facts = (deployment: { forges: Record<string, ForgeAccount> } | undefined, instance: string): Record<string, Localized | string> => {
@@ -71,7 +73,8 @@ const facts = (deployment: { forges: Record<string, ForgeAccount> } | undefined,
 /** Builds a forge kind: the instances it admits, its scope by admission row, its Channel, thread context, searches, and facts. */
 export function forgeKind<C extends ForgeConfig>(spec: ForgeSpec<C>, parts: Pick<SourceKind<C>, 'channel' | 'threadContext'>): SourceKind<C> {
   return {
-    kind: spec.kind, multiple: true, title: spec.title, description: spec.description, schema: spec.schema, fields: spec.fields,
+    kind: spec.kind, multiple: true, ...spec.offUntilSaved ? { offUntilSaved: true } : {}, title: spec.title, description: spec.description,
+    schema: spec.schema, fields: spec.fields,
     // What the Source observes across the repository it receives in full; elsewhere, only what addresses the agent.
     scope: ({ meta }, config) => {
       const row = rowOf(meta)

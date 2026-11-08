@@ -185,4 +185,10 @@ it('resolves a Gitea account from its token file and tea\'s login, and names wha
   await needs('cliAccountDiffers', { login: 'clint', account: 'ziggy' }, {}, logins('clint'))
   http.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) } as never)
   await needs('tokenRejected', { host: 'git.example.com' }, {})
+  // A token without read:notification reads the account but not what polling starts from (as Gitea 28 answers).
+  const scope = 'token does not have at least one of required scope(s), required=[read:notification], token scope=write:issue,read:user'
+  http.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: 4, login: 'ziggy' }) } as never)
+    .mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ message: scope }) } as never)
+  await needs('tokenScopeMissing', { host: 'git.example.com', account: 'ziggy', scope: 'read:notification', output: scope }, {})
+  expect(http.mock.calls.at(-1)?.[0]).toBe(`${API}/notifications?limit=1`)
 })

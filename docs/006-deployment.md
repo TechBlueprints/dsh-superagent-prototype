@@ -54,7 +54,7 @@ A GitHub Source names its host in **GitHub host** (advanced; `github.com` by def
 
 The Gitea Source (plugin `dsh-superagent-gitea`, inserted disabled; enable it in the plugin manager or set `disabled: false` in `cordis.patch.yml`) watches a repository on a Gitea server. It needs:
 
-1. A Gitea user account for the agent with write access to the repository, and an API token of it with repository, issue and notification scopes, in a file only its owner can read:
+1. A Gitea user account for the agent with write access to the repository, and an API token of it with the scopes `write:repository`, `write:issue`, `read:notification` and `read:user` (plus `read:organization` for an organization's `owner/*`), in a file only its owner can read. Setup reads the account's notifications, and names a token without `read:notification` (`tokenScopeMissing`):
 
    ```sh
    install -m 600 /dev/null ~/.config/dsh-superagent/gitea-agent.token
