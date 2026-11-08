@@ -90,7 +90,8 @@ describe('Gitea client', () => {
   it('gives inline comments the thread root GitHub would, decisions GitHub\'s names, and leaves pending reviews out', async () => {
     const comment = (id: number, path: string, position: number, minute: number, original = 0) => ({ id, body: `inline ${id}`, user: user('carol'),
       path, position, original_position: original, diff_hunk: '@@ -1 +1 @@', created_at: `2026-11-07T10:0${minute}:00Z`, updated_at: `2026-11-07T10:0${minute}:00Z`,
-      html_url: `https://git.example.com/home/app/pulls/7/files#issuecomment-${id}` })
+      // Gitea 28's own address of an inline comment is the conversation's.
+      html_url: `https://git.example.com/home/app/pulls/7#issuecomment-${id}` })
     gitea({ [`GET ${REPO}/pulls/7/reviews`]: paged([{ id: 1, state: 'REQUEST_CHANGES', body: 'Fix it', user: user('carol'), submitted_at: '2026-11-07T10:00:00Z' },
       { id: 2, state: 'COMMENT', body: '', user: user('dave'), submitted_at: '2026-11-07T10:05:00Z' }, { id: 3, state: 'PENDING', body: '', user: user('dave') }]),
     [`GET ${REPO}/pulls/7/reviews/1/comments`]: [comment(11, 'a.ts', 4, 1), comment(12, 'b.ts', 0, 2, 4)],
@@ -98,6 +99,8 @@ describe('Gitea client', () => {
     const inline = await client().comments(7, 'inline')
     expect(inline.map(item => [item.id, item.line, item.original_line, item.in_reply_to_id])).toEqual([[11, 4, null, undefined],
       [12, null, 4, undefined], [21, 4, null, 11], [22, 4, null, undefined]])
+    // Each is addressed on the files page, so a reply to it goes to its review thread.
+    expect(inline.map(item => giteaAddress(item.html_url ?? '', 'home/app', account)?.discussion)).toEqual([11, 12, 21, 22])
     expect((await client().reviewThread(7, 21)).map(item => item.id)).toEqual([11, 21])
     expect((await client().comments(7, 'review')).map(item => [item.id, item.state])).toEqual([[1, 'CHANGES_REQUESTED'], [2, 'COMMENTED']])
     expect(await client().reviewComment(7, 21)).toEqual({ id: 21, in_reply_to_id: 11 })

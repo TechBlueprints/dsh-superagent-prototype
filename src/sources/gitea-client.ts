@@ -30,7 +30,8 @@ export const giteaConventions = (account: Pick<ForgeAccount, 'web' | 'api'>): Fo
 })
 /**
  * Parses a web or API URL of an Issue, PR, or inline review comment in `repository` on a Gitea host: an inline comment's page
- * is the PR's files page with the comment's anchor (`/pulls/<n>/files#issuecomment-<id>`).
+ * is the PR's files page with the comment's anchor (`/pulls/<n>/files#issuecomment-<id>`), which the client gives every inline
+ * comment; the conversation's anchor (`/pulls/<n>#issuecomment-<id>`) names a top-level comment.
  */
 export function giteaAddress(url: string, repository: string, host: Pick<ForgeAccount, 'web' | 'api'>):
   { number: number; pr: boolean; discussion?: number } | undefined {
@@ -184,9 +185,12 @@ export class GiteaClient implements ForgeClient {
     for (const comment of [...valid].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id - b.id)) {
       if (!roots.has(place(comment))) roots.set(place(comment), comment.id)
     }
+    // Gitea 28 gives an inline comment the conversation's address (`/pulls/<n>#issuecomment-<id>`), as it gives a top-level
+    // comment; its address on the files page (which anchors it too) is what marks it as a review thread's.
+    const page = (id: number) => `${this.account.web}/${this.account.repository}/pulls/${number}/files#issuecomment-${id}`
     return validItems(CommentSchema, valid.map(comment => {
       const root = roots.get(place(comment))
-      return { ...comment, line: comment.position || null, original_line: comment.original_position || null,
+      return { ...comment, html_url: page(comment.id), line: comment.position || null, original_line: comment.original_position || null,
         ...root !== undefined && root !== comment.id ? { in_reply_to_id: root } : {} }
     }), tally)
   }
