@@ -48,8 +48,10 @@ function gitea(routes: Record<string, Route>) {
   }))
   return requests
 }
-/** Answers one page of `items` for each `page` a request names, with Gitea's `Link` header while more pages follow. */
-/** A paged Gitea list; `link: false` answers as Gitea 28's repository-wide comment list does, with `X-Total-Count` and no `Link`. */
+/**
+ * Answers one page of `items` for each `page` a request names, with Gitea's `Link` header while more pages follow; `link: false`
+ * answers as Gitea 28's repository-wide comment list does, with `X-Total-Count` and no `Link`.
+ */
 const paged = (items: unknown[], { link = true } = {}) => (url: URL) => {
   const page = Number(url.searchParams.get('page') ?? 1), limit = Number(url.searchParams.get('limit') ?? GITEA_PAGE)
   const more = page * limit < items.length
@@ -140,6 +142,10 @@ describe('Gitea client', () => {
     expect(requests.filter(request => request.method === 'POST')).toHaveLength(1)
     expect(giteaKind.channel!.link({ number: '7' }, { forges: { gitea: account } }, 'gitea'))
       .toEqual({ url: 'https://git.example.com/home/app/issues/7', label: { zh: 'Gitea #7', en: 'Gitea #7' } })
+    // Gitea 28 answers a deleted Issue's comments with 500 and the Issue with 404; while the repository reads, the reply is gone.
+    gitea({ [`GET ${REPO}/issues/7/comments`]: new Response(JSON.stringify({ message: 'issue does not exist [id: 0, repo_id: 14, index: 7]' }), { status: 500 }),
+      [`GET ${REPO}`]: { full_name: 'home/app' } })
+    expect(await send('m3')).toBe('gone')
   })
 })
 

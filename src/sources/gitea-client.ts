@@ -209,7 +209,7 @@ export class GiteaClient implements ForgeClient {
     const after = (comment: ForgeComment) => !since || Date.parse(comment.updated_at ?? comment.created_at ?? '') >= Date.parse(since)
     if (kind === 'inline') return (await this.inline(number, tally)).filter(after)
     const suffix = since ? `?since=${encodeURIComponent(since)}` : ''
-    const listed = z.array(z.unknown()).parse(await this.get(`issues/${number}/comments${suffix}`))
+    const listed = z.array(z.unknown()).parse(await this.onIssue(number, () => this.get(`issues/${number}/comments${suffix}`)))
     return validItems(CommentSchema, listed.map(utc), tally)
   }
   /** One page of a conversation (Gitea lists an Issue's comments whole, so they are paged here), a PR's inline comments, or its reviews. */
@@ -255,12 +255,25 @@ export class GiteaClient implements ForgeClient {
     if (!response.ok) throw new ForgeError(`Gitea: ${response.statusText} (HTTP ${response.status})`, response.status)
     return response.text()
   }
+  /**
+   * Gitea 28 answers a deleted Issue's comment list with 500 "issue does not exist" (and its page with 404), so a failed read
+   * or post of its comments rereads the Issue, which is 410 when it was deleted and the repository still reads.
+   */
+  private async onIssue<T>(number: number, read: () => Promise<T>): Promise<T> {
+    try { return await read() }
+    catch (error) {
+      if (!(error instanceof ForgeError) || !(error.code === 404 || (error.code === 500 && /issue does not exist/i.test(error.message)))) throw error
+      await this.issue(number)
+      throw error
+    }
+  }
   async posted(number: number, root?: number) {
-    if (root === undefined) return validItems(CommentSchema, z.array(z.unknown()).parse(await this.get(`issues/${number}/comments`)))
+    if (root === undefined) return this.onIssue(number, async () => validItems(CommentSchema, z.array(z.unknown()).parse(await this.get(`issues/${number}/comments`))))
     return (await this.inline(number)).filter(comment => comment.in_reply_to_id === root)
   }
   async post(number: number, body: string, root?: number): Promise<void> {
-    await this.request(root === undefined ? `issues/${number}/comments` : `pulls/${number}/comments/${root}/replies`, { method: 'POST', body: { body } })
+    await this.onIssue(number, () => this.request(root === undefined ? `issues/${number}/comments` : `pulls/${number}/comments/${root}/replies`,
+      { method: 'POST', body: { body } }))
   }
 }
 /** The Gitea client of Source instance `instance`, whose account setup resolved. */
