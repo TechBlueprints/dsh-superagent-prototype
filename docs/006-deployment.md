@@ -281,12 +281,13 @@ The Gitea Source reads Gitea's REST API (`/api/v1`) where the GitHub Source read
 | GitHub | Gitea |
 | --- | --- |
 | `X-Poll-Interval`, ETag and 304 | Neither: the configured interval (at least 15 seconds), every read in full |
-| `per_page`, server-side sort | `page` and `limit` (at most 50) with `Link`; every page is read and sorted here, and a list longer than 20 pages fails the read without moving its cursor |
+| `per_page`, server-side sort | `page` and `limit` (at most 50) with `Link` (the repository-wide comment list sends only `X-Total-Count`, which counts its pages instead); every page is read and sorted here, and a list longer than 20 pages fails the read without moving its cursor |
 | A pull request's notification names `/pulls/<n>` | Always `/issues/<n>`, with `subject.type: Pull` |
 | Repository-wide inline review comments | None: inline comments arrive only on subscribed pull requests |
-| Inline comments with `in_reply_to_id` | Comments of each review; a thread's root is the earliest comment on the same file and line |
+| Inline comments with `in_reply_to_id` | Comments of each review; a thread's root is the earliest comment on the same file and line. Gitea gives an inline comment the conversation's address, so it is addressed on the files page (`/pulls/<n>/files#issuecomment-<id>`), and a reply goes to `pulls/<n>/comments/<root>/replies` |
 | Check runs and statuses | Statuses only; Gitea Actions report as statuses, and `warning` neither fails nor runs |
-| 410 for a deleted Issue | 404 only: read as deleted when the repository itself still reads |
+| 410 for a deleted Issue | 404 for the Issue and 500 for its comments: read as deleted when the repository itself still reads, so a reply to it is dropped as `channelGone` |
+| Resolving a thread or dismissing a review leaves its comments' times | Resolving an inline comment, or a later review by the same person dismissing an earlier one, moves its `updated_at`: a resolved comment keeps its creation time and a review its submission time, so neither arrives again as an edit |
 | `[bot]` logins | No bot marker: the Source's **Automated accounts** |
 | A noreply commit email | The account's own email, else `<login>@noreply.<host>` |
 
