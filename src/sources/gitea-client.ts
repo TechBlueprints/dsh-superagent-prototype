@@ -109,7 +109,10 @@ export class GiteaClient implements ForgeClient {
     return { value: text ? JSON.parse(text) as unknown : null, headers: response.headers }
   }
   async get(path: string): Promise<unknown> { return (await this.request(path)).value }
-  /** Reads every page of a list (`limit` and `page` added to `path`), following `Link: rel="next"` up to `GITEA_PAGES` pages. */
+  /**
+   * Reads every page of a list (`limit` and `page` added to `path`), following `Link: rel="next"` up to `GITEA_PAGES` pages, or,
+   * where Gitea sends no `Link` (its repository-wide comment list sends only `X-Total-Count`), until that count is read.
+   */
   async list(path: string): Promise<unknown[]> {
     const items: unknown[] = []
     const join = path.includes('?') ? '&' : '?'
@@ -117,7 +120,9 @@ export class GiteaClient implements ForgeClient {
       const { value, headers } = await this.request(`${path}${join}limit=${GITEA_PAGE}&page=${page}`)
       const listed = z.array(z.unknown()).parse(value)
       items.push(...listed)
-      if (!/rel="next"/.test(headers.get('link') ?? '') || listed.length === 0) return items
+      const link = headers.get('link')
+      const more = link ? /rel="next"/.test(link) : Number(headers.get('x-total-count') ?? 0) > items.length
+      if (!more || listed.length === 0) return items
     }
     throw new ForgeError(`Gitea lists more than ${GITEA_PAGES * GITEA_PAGE} items for ${path.split('?')[0]}; nothing of it was taken in`)
   }

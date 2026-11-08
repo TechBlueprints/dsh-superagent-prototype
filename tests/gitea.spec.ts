@@ -49,11 +49,12 @@ function gitea(routes: Record<string, Route>) {
   return requests
 }
 /** Answers one page of `items` for each `page` a request names, with Gitea's `Link` header while more pages follow. */
-const paged = (items: unknown[]) => (url: URL) => {
+/** A paged Gitea list; `link: false` answers as Gitea 28's repository-wide comment list does, with `X-Total-Count` and no `Link`. */
+const paged = (items: unknown[], { link = true } = {}) => (url: URL) => {
   const page = Number(url.searchParams.get('page') ?? 1), limit = Number(url.searchParams.get('limit') ?? GITEA_PAGE)
   const more = page * limit < items.length
   return new Response(JSON.stringify(items.slice((page - 1) * limit, page * limit)), { status: 200,
-    headers: { 'x-total-count': String(items.length), ...more ? { link: `<${url.origin}${url.pathname}?page=${page + 1}&limit=${limit}>; rel="next"` } : {} } })
+    headers: { 'x-total-count': String(items.length), ...more && link ? { link: `<${url.origin}${url.pathname}?page=${page + 1}&limit=${limit}>; rel="next"` } : {} } })
 }
 const user = (login: string) => ({ id: login.length, login, email: '' })
 const issue = (number: number, fields: Record<string, unknown> = {}) => ({ id: 900 + number, number, title: `Issue ${number}`, body: '', state: 'open',
@@ -66,7 +67,7 @@ describe('Gitea client', () => {
     const comments = Array.from({ length: 60 }, (_, index) => ({ id: index, body: `c${index}`, user: user('alice'),
       created_at: `2026-11-07T10:${String(59 - index).padStart(2, '0')}:00+02:00`, updated_at: `2026-11-07T10:${String(59 - index).padStart(2, '0')}:00+02:00`,
       html_url: `https://git.example.com/home/app/issues/3#issuecomment-${index}`, issue_url: '', pull_request_url: 'https://git.example.com/home/app/pulls/3' }))
-    const requests = gitea({ [`GET ${REPO}/issues/comments`]: paged(comments) })
+    const requests = gitea({ [`GET ${REPO}/issues/comments`]: paged(comments, { link: false }) })
     const page = await client().stream('comments', '2026-11-07T00:00:00.000Z')
     expect(requests.map(request => new URL(request.url).searchParams.get('page'))).toEqual(['1', '2'])
     expect(requests[0]!.url).toContain(`limit=${GITEA_PAGE}`)
