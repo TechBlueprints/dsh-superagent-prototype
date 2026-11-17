@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { pause, Waker, WAKE_MIN_MS } from '../src/sources/poll.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { giteaKind } from '../src/sources/gitea.ts'
+import { githubKind } from '../src/sources/github.ts'
 import { SettingsSchema } from '../src/policy.ts'
 
 beforeEach(() => { vi.useFakeTimers() })
@@ -57,4 +58,10 @@ it('accepts a Gitea polling interval of one day', () => {
   const base = { host: 'git.example.com', repository: 'acme/widgets', tokenFile: '/t', cli: 'tea' }
   expect(giteaKind.schema.safeParse({ ...base, pollSeconds: 86_400 }).success).toBe(true)
   expect(giteaKind.schema.safeParse({ ...base, pollSeconds: 86_401 }).success).toBe(false)
+})
+
+it('accepts a GitHub polling interval of one day', () => {
+  const base = { repository: 'acme/widgets', cli: 'gh' }
+  expect(githubKind.schema.safeParse({ ...base, pollSeconds: 86_400 }).success).toBe(true)
+  expect(githubKind.schema.safeParse({ ...base, pollSeconds: 86_401 }).success).toBe(false)
 })
