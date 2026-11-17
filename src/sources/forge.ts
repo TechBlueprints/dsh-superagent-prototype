@@ -13,6 +13,7 @@ import { forgeThreadId } from './forge-trigger.ts'
 import { GithubClient, githubConventions } from './github-client.ts'
 import { GiteaClient, giteaConventions } from './gitea-client.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
+import { Waker } from './poll.ts'
 import type { FieldSpec, Localized, SourceKind, SourcePolicyPart, VariableSpec, EnvironmentInput } from './kind.ts'
 
 /** The forge kinds' clients, by kind. */
@@ -107,16 +108,20 @@ export function forgeKind<C extends ForgeConfig>(spec: ForgeSpec<C>, parts: Pick
   }
 }
 /** A forge plugin's entry: registers its kind, then polls each of its instances in its own loop until the plugin stops. */
-export function applyForge(ctx: Context, kind: SourceKind, watch: (source: SourceContext, signal: AbortSignal) => Promise<void>): void {
+export function applyForge(ctx: Context, kind: SourceKind,
+  watch: (source: SourceContext, signal: AbortSignal, waker: Waker) => Promise<void>): void {
   ctx.effect(() => ctx.orchestrator.sources.register(kind), `${kind.kind}: source kind`)
   ctx.effect(() => {
     const controller = new AbortController()
+    const released: (() => void)[] = []
     const running = ctx.orchestrator.sources.instancesOf(kind.kind).map(instance => {
       const source = sourceContext(ctx.orchestrator, kind, instance)
+      const waker = new Waker()
+      released.push(ctx.orchestrator.sources.wakeable(instance, () => waker.wake()))
       // Unhandled rejections terminate the DSH process, so a failure escaping the polling loop is reported as source health instead.
-      return watch(source, controller.signal).catch((error: unknown) => { source.report(kind.kind, { state: 'error', detail: String(error) }) })
+      return watch(source, controller.signal, waker).catch((error: unknown) => { source.report(kind.kind, { state: 'error', detail: String(error) }) })
     })
-    return async () => { controller.abort(); await Promise.all(running) }
+    return async () => { for (const release of released) release(); controller.abort(); await Promise.all(running) }
   })
 }
 export { health }

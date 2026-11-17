@@ -77,5 +77,5 @@ export const githubKind: SourceKind<GithubConfig> = forgeKind<GithubConfig>({
 export const name = 'dsh-superagent-github'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
-  applyForge(ctx, githubKind as unknown as SourceKind, (source, signal) => watchForge(source, signal, SOURCE))
+  applyForge(ctx, githubKind as unknown as SourceKind, (source, signal, waker) => watchForge(source, signal, SOURCE, waker))
 }
