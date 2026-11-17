@@ -296,7 +296,9 @@ The Gitea Source reads Gitea's REST API (`/api/v1`) where the GitHub Source read
 never starts a round less than 5 seconds after the last one ended, a wake during a round gives exactly one more round
 after it, and on GitHub the interval GitHub asked for is still waited out. The round reads Gitea as any poll round does,
 so a Gitea webhook can drive a Source with a slow fallback interval: something on the host checks the hook's signature
-and calls this route on loopback, and `pollSeconds` (up to 86400 on Gitea) covers a missed hook.
+and calls this route on loopback, and `pollSeconds` (up to 86400 on Gitea and on GitHub) covers a missed hook. Call the
+route only after the forge has written the notification: a round that runs before it finds nothing and moves the
+Source past the event. Gitea wrote it about 6 s after the event and GitHub 22 to 24 s after (measured 2026-11).
 
 ## Upgrade
 
