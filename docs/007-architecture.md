@@ -423,6 +423,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/forge-of.spec.ts` | Which forge repository a Ticket works on, its forge variables, and the session marker that starts each Session's system prompt |
 | `tests/gitea.spec.ts` | The Gitea Source against a stubbed Gitea API: paging, normalization, threads, CI, the 404 rule, the Channel, a poll round and setup |
+| `tests/poll-wake.spec.ts` | Waking a forge Source's polling loop (`POST sources/:id/poll`): the minimum gap, one more round for wakes during a round, the forge's own interval, and Gitea's one-day interval limit |
 | `tests/github-client.spec.ts` | `GithubClient`'s gh calls for github.com and a GitHub Enterprise Server host, inside one repository |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
@@ -441,7 +442,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
-| `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
+| `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries, and the poll route |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |

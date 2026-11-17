@@ -11,7 +11,7 @@ import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, forgeThreadI
 import { observePull, pullRefsOf, readPull, type Pull } from './forge-pull.ts'
 import { health, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
-import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
+import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach, type Waker } from './poll.ts'
 import type { ForgeConfig } from './forge.ts'
 
 /** Returns an error health once `failures` consecutive polls fail, or undefined so a single network interruption stays quiet. */
@@ -42,8 +42,9 @@ const configOf = (ctx: SourceContext) => ctx.config<ForgeConfig>(ctx.instance)
 /**
  * Polls one forge instance until `signal` aborts, at the interval its configuration and its forge ask for.
  * @param name - the health entry its kind declares (the kind's id), which reports this instance's entry.
+ * @param waker - ends the wait between rounds early (`POST sources/:id/poll`); the forge's own interval still holds.
  */
-export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: string): Promise<void> {
+export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: string, waker?: Waker): Promise<void> {
   let interval = 0
   let failures = 0
   await ctx.ready
@@ -66,7 +67,9 @@ export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: 
       const failed = pollFailure(failures, config?.failuresBeforeError ?? 1, error)
       if (!signal.aborted && failed) ctx.report(name, failed)
     }
-    await pause(Math.max(interval, configOf(ctx)?.pollSeconds ?? 60) * 1000, signal)
+    const seconds = Math.max(interval, configOf(ctx)?.pollSeconds ?? 60)
+    // The interval the forge asked for (GitHub's X-Poll-Interval) is waited out before a wake may end the pause.
+    await pause(seconds * 1000, signal, waker, interval ? Math.max(interval * 1000, 5000) : undefined)
   }
 }
 interface Round {

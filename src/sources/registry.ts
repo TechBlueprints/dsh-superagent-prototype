@@ -29,6 +29,7 @@ export const instanceIdAllowed = (kind: Pick<SourceKind, 'kind' | 'multiple'>, i
 export class SourceRegistry implements SourceScope {
   private readonly kinds = new Map<string, SourceKind>()
   private readonly health = new Map<string, HealthEntry>()
+  private readonly wakers = new Map<string, () => void>()
   constructor(private readonly settings: () => Settings, private readonly board: Pick<HealthBoard, 'claim'> = new HealthBoard(),
     private readonly registered: (kind: SourceKind) => () => void = () => () => {}) {}
 
@@ -73,6 +74,17 @@ export class SourceRegistry implements SourceScope {
     return kind ? kind.health.map(name => instanceHealth(kind.kind, id, name)) : []
   }
   kind(id: string): SourceKind | undefined { return this.kinds.get(id) }
+  /** Registers the wake of instance `id`'s polling loop, and returns the function that removes it. */
+  wakeable(id: string, wake: () => void): () => void {
+    this.wakers.set(id, wake)
+    return () => { if (this.wakers.get(id) === wake) this.wakers.delete(id) }
+  }
+  /** Asks instance `id`'s polling loop to poll now; false when no loop of it is running (off, not polled, or not installed). */
+  poll(id: string): boolean {
+    const wake = this.wakers.get(id)
+    wake?.()
+    return !!wake
+  }
   /** The installed kind of instance `id` (`undefined` when it is not installed or names no instance). */
   kindFor(id: string, settings = this.settings()): SourceKind | undefined {
     const kind = this.kinds.get(kindOf(id, settings))

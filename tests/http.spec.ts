@@ -96,3 +96,14 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
 })
+
+it('wakes a Source\'s polling loop with POST sources/:id/poll, and answers 404 for an unknown Source', async () => {
+  const woken: string[] = []
+  const call = serve({
+    sources: { instances: () => [{ id: 'gitea' }, { id: 'feishu' }], poll: (id: string) => { woken.push(id); return id === 'gitea' } },
+  })
+  expect(await call('POST', 'sources/gitea/poll')).toEqual({ status: 200, body: { queued: true } })
+  expect(await call('POST', 'sources/feishu/poll')).toEqual({ status: 200, body: { queued: false } })
+  expect(await call('POST', 'sources/nope/poll')).toEqual({ status: 404, body: { error: 'Source not found' } })
+  expect(woken).toEqual(['gitea', 'feishu'])
+})

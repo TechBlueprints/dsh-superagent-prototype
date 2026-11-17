@@ -16,7 +16,7 @@ export const giteaLink = (address: Record<string, string>, links: ChannelLinks, 
 const Login = z.string().regex(/^[A-Za-z0-9_.-]+$/)
 const GiteaConfigSchema = GiteaAccountsSchema.extend({
   // Gitea asks for no polling interval, so the configured one is the interval; it may be shorter than GitHub's.
-  pollSeconds: z.number().int().min(15).max(3600).default(60),
+  pollSeconds: z.number().int().min(15).max(86400).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
   observeCi: z.boolean().default(false),
@@ -43,7 +43,7 @@ export const giteaKind: SourceKind<GiteaConfig> = forgeKind<GiteaConfig>({
     { key: 'automatedAccounts', type: 'rows', label: { zh: '自动化账号', en: 'Automated accounts' },
       hint: { zh: 'Gitea 不标记机器人：名单里的账号（例如评审或 CI 机器人）当作非人类，它们的消息不能发起工作。', en: 'Gitea marks no account as a bot: the accounts listed here, such as review or CI bots, count as automated, and their messages never originate work.' },
       columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9_.\\-]+' }] },
-    { key: 'pollSeconds', type: 'number', advanced: true, min: 15, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
+    { key: 'pollSeconds', type: 'number', advanced: true, min: 15, max: 86400, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
       hint: { zh: '打开后，没有 @ 智能体的新 Issue 也会收到，由策略的接收表决定是否成为候选。从打开的时候开始，不读以前的。', en: 'New Issues that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates. Starts when switched on; earlier ones are not read.' } },
@@ -66,5 +66,5 @@ export const giteaKind: SourceKind<GiteaConfig> = forgeKind<GiteaConfig>({
 export const name = 'dsh-superagent-gitea'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
-  applyForge(ctx, giteaKind as unknown as SourceKind, (source, signal) => watchForge(source, signal, SOURCE))
+  applyForge(ctx, giteaKind as unknown as SourceKind, (source, signal, waker) => watchForge(source, signal, SOURCE, waker))
 }

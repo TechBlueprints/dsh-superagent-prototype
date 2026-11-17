@@ -280,7 +280,7 @@ The Gitea Source reads Gitea's REST API (`/api/v1`) where the GitHub Source read
 
 | GitHub | Gitea |
 | --- | --- |
-| `X-Poll-Interval`, ETag and 304 | Neither: the configured interval (at least 15 seconds), every read in full |
+| `X-Poll-Interval`, ETag and 304 | Neither: the configured interval (15 seconds to one day), every read in full |
 | `per_page`, server-side sort | `page` and `limit` (at most 50) with `Link` (the repository-wide comment list sends only `X-Total-Count`, which counts its pages instead); every page is read and sorted here, and a list longer than 20 pages fails the read without moving its cursor |
 | A pull request's notification names `/pulls/<n>` | Always `/issues/<n>`, with `subject.type: Pull` |
 | Repository-wide inline review comments | None: inline comments arrive only on subscribed pull requests |
@@ -290,6 +290,13 @@ The Gitea Source reads Gitea's REST API (`/api/v1`) where the GitHub Source read
 | Resolving a thread or dismissing a review leaves its comments' times | Resolving an inline comment, or a later review by the same person dismissing an earlier one, moves its `updated_at`: a resolved comment keeps its creation time and a review its submission time, so neither arrives again as an edit |
 | `[bot]` logins | No bot marker: the Source's **Automated accounts** |
 | A noreply commit email | The account's own email, else `<login>@noreply.<host>` |
+
+**Polling now.** `POST sources/<id>/poll` on the Management API asks one forge Source instance to run a poll round now:
+`{ "queued": true }` when its loop is running, `false` when it is off or not a forge Source, 404 for an unknown id. A wake
+never starts a round less than 5 seconds after the last one ended, a wake during a round gives exactly one more round
+after it, and on GitHub the interval GitHub asked for is still waited out. The round reads Gitea as any poll round does,
+so a Gitea webhook can drive a Source with a slow fallback interval: something on the host checks the hook's signature
+and calls this route on loopback, and `pollSeconds` (up to 86400 on Gitea) covers a missed hook.
 
 ## Upgrade
 

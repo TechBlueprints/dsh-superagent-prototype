@@ -29,12 +29,41 @@ export async function pollThreads(ctx: SourceContext, source: string, stopped: (
     }
   }
 }
-/** Waits `ms` or until `signal` aborts using global `setTimeout` so test fake timers can drive polling loops. */
-export function pause(ms: number, signal: AbortSignal): Promise<void> {
+/**
+ * A request to poll now, for one Source instance's loop. `wake()` ends a pause in progress, or, when the loop is mid-round,
+ * makes exactly one more round run right after it; several wakes before the loop looks count as one.
+ */
+export class Waker {
+  private pending = false
+  private listener: (() => void) | undefined
+  wake(): void { this.pending = true; this.listener?.() }
+  /** Takes the pending wake, if any. */
+  take(): boolean { const pending = this.pending; this.pending = false; return pending }
+  /** Calls `listener` on the next wake (or at once when one is pending), until the returned function removes it. */
+  on(listener: () => void): () => void {
+    this.listener = listener
+    if (this.pending) listener()
+    return () => { if (this.listener === listener) this.listener = undefined }
+  }
+}
+/** The shortest gap a wake leaves between the end of one round and the start of the next. */
+export const WAKE_MIN_MS = 5000
+/**
+ * Waits `ms` or until `signal` aborts using global `setTimeout` so test fake timers can drive polling loops. With `waker`, a
+ * wake ends the wait early, though never before `minMs` has passed.
+ */
+export function pause(ms: number, signal: AbortSignal, waker?: Waker, minMs = WAKE_MIN_MS): Promise<void> {
   return new Promise(resolve => {
     if (signal.aborted) { resolve(); return }
-    const stop = () => { clearTimeout(timer); resolve() }
-    const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve() }, ms)
-    signal.addEventListener('abort', stop, { once: true })
+    const started = Date.now()
+    let early: ReturnType<typeof setTimeout> | undefined
+    let off = () => {}
+    const done = () => { clearTimeout(timer); clearTimeout(early); off(); signal.removeEventListener('abort', done); resolve() }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+    if (waker) off = waker.on(() => {
+      if (early !== undefined) return
+      early = setTimeout(() => { waker.take(); done() }, Math.max(0, Math.min(ms, minMs) - (Date.now() - started)))
+    })
   })
 }
