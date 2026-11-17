@@ -298,6 +298,19 @@ after it, and on GitHub the interval GitHub asked for is still waited out. The r
 so a Gitea webhook can drive a Source with a slow fallback interval: something on the host checks the hook's signature
 and calls this route on loopback, and `pollSeconds` (up to 86400 on Gitea) covers a missed hook.
 
+**A missed hook is logged.** On a Gitea instance with **Woken by a webhook** (`webhook: true`, advanced), a poll round that
+its own interval started, with no wake pending, and that still stores new Triggers writes one line to stderr, which
+systemd keeps in the unit's journal (DSH's own logger writes to no stream):
+
+```text
+dsh-superagent: webhook missed: gitea-home (acme/widgets) stored 1 new Trigger on #12 in a poll round its 86400s interval started, with no wake
+```
+
+The webhook never delivered those Triggers (the receiver was down or refused it, or the forge did not send it), or woke
+the instance before they could be read. A round a wake started, the first round after a start (which catches up on what
+arrived while the superagent was down), and a round that stores nothing write no line. The line names the Threads, never
+the text; an alert on it can match `webhook missed`.
+
 ## Upgrade
 
 1. Wait until no Executor is in the middle of a turn.

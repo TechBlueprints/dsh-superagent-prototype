@@ -1,6 +1,6 @@
 /** The forge Source's polling: notifications, repository streams, the PRs of open tickets with their CI, and subscribed Threads, for one instance. */
 import { z } from 'zod'
-import { key, type Thread } from '../core/index.ts'
+import { key, type Thread, type Trigger } from '../core/index.ts'
 import { sameName } from '../infra/text.ts'
 import { validItems, type Tally } from '../infra/commands.ts'
 import { covers, forgeStatus, isWildcard, type ForgeClient, type StreamId } from './forge-client.ts'
@@ -11,7 +11,7 @@ import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, forgeThreadI
 import { observePull, pullRefsOf, readPull, type Pull } from './forge-pull.ts'
 import { health, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
-import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach, type Waker } from './poll.ts'
+import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach, type PauseEnd, type Waker } from './poll.ts'
 import type { ForgeConfig } from './forge.ts'
 
 /** Returns an error health once `failures` consecutive polls fail, or undefined so a single network interruption stays quiet. */
@@ -39,14 +39,37 @@ const pushable = new Map<string, Promise<boolean>>()
 /** The health entry the forge kind of the context's instance declares: its kind's id. */
 const entry = (ctx: SourceContext): string => ctx.deployment.forges[ctx.instance]?.kind ?? ctx.instance
 const configOf = (ctx: SourceContext) => ctx.config<ForgeConfig>(ctx.instance)
+/** A Thread's id as the missed-webhook line names it: `#12`, `owner/name#12`, or `ci:main`. */
+const threadLabel = (id: string): string => /^\d+$/.test(id) ? `#${id}` : id
+/**
+ * The line an instance a webhook wakes (`webhook: true`) writes when a round its own interval started, with no wake pending,
+ * stored new Triggers: the webhook never delivered them, or woke the instance before they could be read. Names the Threads,
+ * never the text.
+ */
+export function missedWebhookLine(instance: string, repository: string, waited: number, triggers: readonly Trigger[]): string {
+  const threads = [...new Set(triggers.map(trigger => trigger.threads[0]?.id).filter((id): id is string => !!id))]
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).map(threadLabel)
+  const count = `${triggers.length} new Trigger${triggers.length === 1 ? '' : 's'}`
+  return `dsh-superagent: webhook missed: ${instance} (${repository}) stored ${count} on ${threads.join(', ') || 'no Thread'}`
+    + ` in a poll round its ${waited}s interval started, with no wake`
+}
+/** Writes the missed-webhook line to stderr, which systemd keeps in the journal (DSH's own logger writes to no stream). */
+const logMissed = (line: string): void => { process.stderr.write(`${line}\n`) }
 /**
  * Polls one forge instance until `signal` aborts, at the interval its configuration and its forge ask for.
  * @param name - the health entry its kind declares (the kind's id), which reports this instance's entry.
  * @param waker - ends the wait between rounds early (`POST sources/:id/poll`); the forge's own interval still holds.
+ * @param round - one polling round (`pollRound`; tests replace it).
+ *
+ * On an instance a webhook wakes (`webhook: true`), a round its own interval started that stores new Triggers writes the
+ * missed-webhook line. A round a wake started, the first round after a start, and a round that stores nothing write none.
  */
-export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: string, waker?: Waker): Promise<void> {
+export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: string, waker?: Waker,
+  round: (ctx: SourceContext, signal: AbortSignal, stored: Trigger[]) => Promise<number> = pollRound): Promise<void> {
   let interval = 0
   let failures = 0
+  let startedBy: PauseEnd | 'start' = 'start'
+  let waited = 0
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the accounts; until then nothing is polled.
   if (!ctx.configured()) { ctx.report(name, health('paused', 'setupPending')); return }
@@ -58,8 +81,9 @@ export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: 
   }
   while (!signal.aborted) {
     const config = configOf(ctx)
+    const stored: Trigger[] = []
     try {
-      if (config) interval = await pollRound(ctx, signal)
+      if (config) interval = await round(ctx, signal, stored)
       else ctx.report(name, health('paused', 'sourceOff'))
       failures = 0
     } catch (error) {
@@ -67,18 +91,29 @@ export async function watchForge(ctx: SourceContext, signal: AbortSignal, name: 
       const failed = pollFailure(failures, config?.failuresBeforeError ?? 1, error)
       if (!signal.aborted && failed) ctx.report(name, failed)
     }
+    // A failed round still counts what it stored before it failed.
+    if (startedBy === 'timer' && config?.webhook && stored.length && !signal.aborted) {
+      logMissed(missedWebhookLine(ctx.instance, config.repository, waited, stored))
+    }
     const seconds = Math.max(interval, configOf(ctx)?.pollSeconds ?? 60)
+    waited = seconds
     // The interval the forge asked for (GitHub's X-Poll-Interval) is waited out before a wake may end the pause.
-    await pause(seconds * 1000, signal, waker, interval ? Math.max(interval * 1000, 5000) : undefined)
+    startedBy = await pause(seconds * 1000, signal, waker, interval ? Math.max(interval * 1000, 5000) : undefined)
   }
 }
 interface Round {
   started: string; signal?: AbortSignal | undefined
   pulls: Map<string, Promise<Pull>>; read: Set<string>; failures: string[]; dropped: Ref[]; abandoned: Ref[]; unpushable: Set<string>
   tally: Tally
+  /** The Triggers this round stored (new to the Engine; duplicates of earlier rounds are not). */
+  stored: Trigger[]
 }
-const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
-  failures: [], dropped: [], abandoned: [], unpushable: new Set(), tally: { skipped: 0 } })
+const newRound = (signal?: AbortSignal, stored: Trigger[] = []): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(),
+  read: new Set(), failures: [], dropped: [], abandoned: [], unpushable: new Set(), tally: { skipped: 0 }, stored })
+/** Ingests a Trigger and keeps it in the round when the Engine stored it as new. */
+async function receive(ctx: SourceContext, round: Round, trigger: Trigger): Promise<void> {
+  if (await ctx.receive(trigger) === 'stored') round.stored.push(trigger)
+}
 const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !configOf(ctx)
 /** A notified Issue or PR to read again, by its Thread id; `repository` names a wildcard instance's repository. */
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number; repository?: string }
@@ -156,7 +191,7 @@ async function readStream(ctx: SourceContext, round: Round, id: StreamId, config
       const issue = IssueSchema.safeParse(item)
       const pr = issue.success && !!issue.data.pull_request
       if (!issue.success || !fresh(issue.data.created_at, pr ? 'pulls' : 'issues')) continue
-      await ctx.receive(pr ? pullTrigger(issue.data, login, origin, human) : issueTrigger(issue.data, login, origin, human))
+      await receive(ctx, round, pr ? pullTrigger(issue.data, login, origin, human) : issueTrigger(issue.data, login, origin, human))
       nameThread(ctx, refOf(ctx, issue.data.number), issue.data.title)
       continue
     }
@@ -165,7 +200,7 @@ async function readStream(ctx: SourceContext, round: Round, id: StreamId, config
     const isPr = id === 'review-comments' || /\/pulls?\//.test(item.html_url ?? '')
     const ref = { number, isPr, ...item.html_url ? { url: item.html_url } : {} }
     const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login, origin, human)
-    if (trigger.text) await ctx.receive(trigger)
+    if (trigger.text) await receive(ctx, round, trigger)
   }
   const newest = Math.max(...items.map(item => Date.parse(item.updated_at ?? '')).filter(Number.isFinite))
   const moved = Number.isFinite(newest) ? cursorAt(new Date(newest).toISOString()) : since
@@ -191,7 +226,7 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
     revision += 1
     const summary = ciSummary(snapshot, branch, `${ctx.instance}/commits/${head}/checks`)
     const url = forge.conventions.commitPage(forge.account.repository, head)
-    await ctx.receive(branchCiTrigger(branch, head, revision, summary, url, originOf(ctx)))
+    await receive(ctx, round, branchCiTrigger(branch, head, revision, summary, url, originOf(ctx)))
     ctx.threads.describe(threadKey(ctx, `ci:${branch}`), { label: `CI on ${branch}`, facts: { ci: ciFact(counts) } })
   }
   ctx.state.set(keys(ctx).branchCi, { branch, failures: now, revision })
@@ -201,10 +236,11 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
  * subscribed Threads. Each step and each Issue, PR, or Thread fails independently so all steps run before the round fails.
  * Other read failures (including 404) fail the round toward the error threshold, whereas deleted (410) or abandoned
  * (24h+) threads are recorded only on the thread and in health detail.
+ * @param stored - collects the Triggers the round stores as new, also when the round then fails.
  * @returns the polling interval the forge asked for, in seconds (0 when it asks for none).
  */
-export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
-  const round = newRound(signal)
+export async function pollRound(ctx: SourceContext, signal?: AbortSignal, stored: Trigger[] = []): Promise<number> {
+  const round = newRound(signal, stored)
   const notified = await pollNotifications(ctx, round).then(value => ({ value }), (error: unknown) => ({ error }))
   await pollRepository(ctx, round)
   await pollTicketPulls(ctx, signal, round)
@@ -290,7 +326,7 @@ async function readNotified(ctx: SourceContext, round: Round, ref: Ref, item: Re
       // An Issue opened by someone other than the agent since the cursor brings its body so a mention in it reaches the gate.
       // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
       const opened = Date.parse(issue.created_at) >= Date.parse(since) && !sameName(issue.user.login, login)
-      if (opened) await ctx.receive(issueTrigger(issue, login, origin, human))
+      if (opened) await receive(ctx, round, issueTrigger(issue, login, origin, human))
       await intakeComments(ctx, ref, { number, isPr: false, url: issue.html_url }, since, round)
       nameThread(ctx, ref, issue.title)
     }
@@ -300,7 +336,7 @@ async function readNotified(ctx: SourceContext, round: Round, ref: Ref, item: Re
     // Emit a PR description trigger for PRs opened since the cursor; its ID is the same as the one produced by the repository PR stream.
     if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !sameName(pr.user.login, login)) {
       const opened = { number, title: pr.title ?? '', body: pr.body, user: pr.user, created_at: pr.created_at, html_url: pr.html_url }
-      await ctx.receive(pullTrigger(opened, login, origin, human))
+      await receive(ctx, round, pullTrigger(opened, login, origin, human))
     }
     await intakeComments(ctx, ref, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
     if (pr.title) nameThread(ctx, ref, pr.title)
@@ -332,7 +368,7 @@ async function intakeComments(ctx: SourceContext, at: Ref, ref: PullRef, since: 
       if (sameName(comment.user.login, login)) continue
       // A review decision without a body still reaches the ticket: a worker may be waiting for that approval.
       const trigger = commentTrigger(comment, ref, kind, login, origin, human)
-      if (trigger.text) await ctx.receive(trigger)
+      if (trigger.text) await receive(ctx, round, trigger)
     }
   }
 }
@@ -355,7 +391,7 @@ async function pollChecks(ctx: SourceContext, round: Round, ref: Ref, pr: Pull):
   if (previous?.fingerprint === fingerprint) return
   const revision = previous ? previous.revision + 1 : 0
   const read = `${ctx.instance}/${ref.repository ? `${ref.repository}/` : ''}pulls/${ref.number}/checks`
-  if (previous) await ctx.receive(ciTrigger(pr, revision, ciSummary(snapshot, `PR ${label(ref)}`, read), originOf(ctx, ref.repository)))
+  if (previous) await receive(ctx, round, ciTrigger(pr, revision, ciSummary(snapshot, `PR ${label(ref)}`, read), originOf(ctx, ref.repository)))
   ctx.state.set(keys(ctx).ci(ref.id), { fingerprint, revision })
   ctx.threads.describe(threadKey(ctx, ref.id), { facts: { ci: ciFact(ciCounts(snapshot)) } })
 }

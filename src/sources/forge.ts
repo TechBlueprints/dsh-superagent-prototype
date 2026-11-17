@@ -40,6 +40,8 @@ export interface ForgeConfig extends Record<string, unknown> {
   observeIssues: boolean; observePulls: boolean; observeComments: boolean; observeCi: boolean
   /** Accounts the instance counts as automated, for a forge that marks none (Gitea). */
   automatedAccounts?: { id: string }[]
+  /** A webhook wakes the instance (POST sources/:id/poll); a round its own interval started that finds something new is logged. */
+  webhook?: boolean
 }
 /** Who counts as a person on an instance: whom its forge reports as one, unless the instance names the account as automated. */
 export function humanOf(conventions: Pick<ForgeConventions, 'isHuman'>, config?: Record<string, unknown>) {
