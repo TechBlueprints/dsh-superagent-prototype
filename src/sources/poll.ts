@@ -49,21 +49,29 @@ export class Waker {
 /** The shortest gap a wake leaves between the end of one round and the start of the next. */
 export const WAKE_MIN_MS = 5000
 /**
- * Waits `ms` or until `signal` aborts using global `setTimeout` so test fake timers can drive polling loops. With `waker`, a
- * wake ends the wait early, though never before `minMs` has passed.
+ * What ended a pause: a wake (`POST sources/:id/poll`), its own time running out with no wake pending, or the signal. A wake
+ * pending when the time runs out counts as a wake, since the round that follows is the one it asked for.
  */
-export function pause(ms: number, signal: AbortSignal, waker?: Waker, minMs = WAKE_MIN_MS): Promise<void> {
+export type PauseEnd = 'wake' | 'timer' | 'abort'
+/**
+ * Waits `ms` or until `signal` aborts using global `setTimeout` so test fake timers can drive polling loops. With `waker`, a
+ * wake ends the wait early, though never before `minMs` has passed. Resolves with what ended it.
+ */
+export function pause(ms: number, signal: AbortSignal, waker?: Waker, minMs = WAKE_MIN_MS): Promise<PauseEnd> {
   return new Promise(resolve => {
-    if (signal.aborted) { resolve(); return }
+    if (signal.aborted) { resolve('abort'); return }
     const started = Date.now()
     let early: ReturnType<typeof setTimeout> | undefined
     let off = () => {}
-    const done = () => { clearTimeout(timer); clearTimeout(early); off(); signal.removeEventListener('abort', done); resolve() }
-    const timer = setTimeout(done, ms)
-    signal.addEventListener('abort', done, { once: true })
+    const done = (end: PauseEnd) => {
+      clearTimeout(timer); clearTimeout(early); off(); signal.removeEventListener('abort', aborted); resolve(end)
+    }
+    const aborted = () => { done('abort') }
+    const timer = setTimeout(() => { done(waker?.take() ? 'wake' : 'timer') }, ms)
+    signal.addEventListener('abort', aborted, { once: true })
     if (waker) off = waker.on(() => {
       if (early !== undefined) return
-      early = setTimeout(() => { waker.take(); done() }, Math.max(0, Math.min(ms, minMs) - (Date.now() - started)))
+      early = setTimeout(() => { waker.take(); done('wake') }, Math.max(0, Math.min(ms, minMs) - (Date.now() - started)))
     })
   })
 }

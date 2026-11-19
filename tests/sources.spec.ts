@@ -576,6 +576,22 @@ describe('github source', () => {
     expect(h.store.tickets.get('t9')).toMatchObject({ ended: { outcome: 'merged' } })
     h.store.close()
   })
+  it('collects the Triggers a round stores as new, not the ones the Engine already had', async () => {
+    const h = host()
+    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    const mention = (id: number, number: number): GithubComment => ({ id, body: '@agent-bot take this',
+      user: { login: 'alice', type: 'User' }, html_url: `https://github.com/acme/widgets/issues/${number}#issuecomment-${id}`,
+      created_at: '2026-09-08T01:00:00Z', updated_at: '2026-09-08T01:00:00Z' })
+    github(h, { notifications: [notification(13), notification(14)],
+      'issues/13': issue(13, { created_at: '2026-08-01T00:00:00Z' }), 'issues/13/comments': [mention(1, 13)],
+      'issues/14': issue(14, { created_at: '2026-08-01T00:00:00Z' }), 'issues/14/comments': [mention(2, 14)] })
+    h.receive.mockImplementationOnce(async () => 'duplicate')
+    const stored: Trigger[] = []
+    await pollRound(h, undefined, stored)
+    expect(h.receive).toHaveBeenCalledTimes(2)
+    expect(stored).toEqual([h.receive.mock.calls[1]![0]])
+    h.store.close()
+  })
   it('reads each notified Issue alone and reads a failed one again next round, from where it was', async () => {
     const h = host()
     h.store.set('github-since', '2026-09-08T00:00:00.000Z')

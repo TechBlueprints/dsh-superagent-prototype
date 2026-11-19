@@ -22,6 +22,9 @@ const GiteaConfigSchema = GiteaAccountsSchema.extend({
   observeCi: z.boolean().default(false),
   // Gitea marks no account as a bot, so the accounts of automated reviewers and CI are named here.
   automatedAccounts: z.array(z.object({ id: Login }).strict()).default([]),
+  // A webhook wakes this instance (POST sources/:id/poll), so a round its own interval started that finds something new
+  // means the webhook missed it, which is logged.
+  webhook: z.boolean().default(false),
 }).strict()
 export type GiteaConfig = z.infer<typeof GiteaConfigSchema> & ForgeConfig
 export const giteaKind: SourceKind<GiteaConfig> = forgeKind<GiteaConfig>({
@@ -44,6 +47,8 @@ export const giteaKind: SourceKind<GiteaConfig> = forgeKind<GiteaConfig>({
       hint: { zh: 'Gitea 不标记机器人：名单里的账号（例如评审或 CI 机器人）当作非人类，它们的消息不能发起工作。', en: 'Gitea marks no account as a bot: the accounts listed here, such as review or CI bots, count as automated, and their messages never originate work.' },
       columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9_.\\-]+' }] },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 15, max: 86400, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
+    { key: 'webhook', type: 'switch', advanced: true, label: { zh: '由 Webhook 唤醒', en: 'Woken by a webhook' },
+      hint: { zh: '一个 Gitea Webhook 通过 POST sources/:id/poll 唤醒这个实例。打开后，按自身间隔开始、却读到新消息的轮询会写一行“webhook missed”日志（stderr）。', en: 'A Gitea webhook wakes this instance through POST sources/:id/poll. When on, a round its own interval started that still finds something new writes one "webhook missed" line to stderr.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
       hint: { zh: '打开后，没有 @ 智能体的新 Issue 也会收到，由策略的接收表决定是否成为候选。从打开的时候开始，不读以前的。', en: 'New Issues that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates. Starts when switched on; earlier ones are not read.' } },
