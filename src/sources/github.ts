@@ -20,7 +20,10 @@ export const githubLink = (address: Record<string, string>, links: ChannelLinks,
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(86400).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
-  observeCi: z.boolean().default(false) }).strict()
+  observeCi: z.boolean().default(false),
+  // A webhook wakes this instance (POST sources/:id/poll), so a round its own interval started that finds something new
+  // means the webhook missed it, which is logged.
+  webhook: z.boolean().default(false) }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema> & ForgeConfig
 export const githubKind: SourceKind<GithubConfig> = forgeKind<GithubConfig>({
   kind: SOURCE,
@@ -36,6 +39,8 @@ export const githubKind: SourceKind<GithubConfig> = forgeKind<GithubConfig>({
     { key: 'host', type: 'text', advanced: true, pattern: '[A-Za-z0-9.\\-]+(:[0-9]+)?', label: { zh: 'GitHub 主机', en: 'GitHub host' },
       hint: { zh: 'github.com，或 GitHub Enterprise Server 的主机名。gh 要用 gh auth login --hostname 登录过这台主机。', en: 'github.com, or the host name of a GitHub Enterprise Server, which gh must be signed in to with gh auth login --hostname.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 86400, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
+    { key: 'webhook', type: 'switch', advanced: true, label: { zh: '由 Webhook 唤醒', en: 'Woken by a webhook' },
+      hint: { zh: '一个 GitHub Webhook 通过 POST sources/:id/poll 唤醒这个实例（在 GitHub 写好通知之后）。打开后，按自身间隔开始、却读到新消息的轮询会写一行“webhook missed”日志（stderr）。', en: 'A GitHub webhook wakes this instance through POST sources/:id/poll, once GitHub has written the notification. When on, a round its own interval started that still finds something new writes one "webhook missed" line to stderr.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
       hint: { zh: '打开后，没有 @ 智能体的新 Issue 也会收到，由策略的接收表决定是否成为候选。从打开的时候开始，不读以前的。', en: 'New Issues that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates. Starts when switched on; earlier ones are not read.' } },

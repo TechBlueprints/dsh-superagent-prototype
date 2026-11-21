@@ -294,15 +294,19 @@ The Gitea Source reads Gitea's REST API (`/api/v1`) where the GitHub Source read
 **Polling now.** `POST sources/<id>/poll` on the Management API asks one forge Source instance to run a poll round now:
 `{ "queued": true }` when its loop is running, `false` when it is off or not a forge Source, 404 for an unknown id. A wake
 never starts a round less than 5 seconds after the last one ended, a wake during a round gives exactly one more round
-after it, and on GitHub the interval GitHub asked for is still waited out. The round reads Gitea as any poll round does,
-so a Gitea webhook can drive a Source with a slow fallback interval: something on the host checks the hook's signature
-and calls this route on loopback, and `pollSeconds` (up to 86400 on Gitea and on GitHub) covers a missed hook. Call the
-route only after the forge has written the notification: a round that runs before it finds nothing and moves the
-Source past the event. Gitea wrote it about 6 s after the event and GitHub 22 to 24 s after (measured 2026-11).
+after it, and on GitHub the interval GitHub asked for is still waited out. The round reads the forge as any poll round
+does, so a Gitea or GitHub webhook can drive a Source with a slow fallback interval: something on the host checks the
+hook's signature and calls this route on loopback, and `pollSeconds` (up to 86400 on Gitea and on GitHub) covers a
+missed hook. Call the route after the forge has written the notification: Gitea wrote it about 6 s after the event and
+GitHub 22 to 24 s after (measured 2026-11). A round that runs before then finds nothing, but the notification cursor it
+leaves reaches two minutes back of its start, so as long as the forge writes the notification within two minutes of
+the event the next round still reads it and the Issue body or comment it names (the Trigger ids make what a round reads
+again a duplicate, not new work). That next round may be the fallback interval's, a day later, so wake again once the
+notification exists.
 
-**A missed hook is logged.** On a Gitea instance with **Woken by a webhook** (`webhook: true`, advanced), a poll round that
-its own interval started, with no wake pending, and that still stores new Triggers writes one line to stderr, which
-systemd keeps in the unit's journal (DSH's own logger writes to no stream):
+**A missed hook is logged.** On a Gitea or GitHub instance with **Woken by a webhook** (`webhook: true`, advanced), a
+poll round that its own interval started, with no wake pending, and that still stores new Triggers writes one line to
+stderr, which systemd keeps in the unit's journal (DSH's own logger writes to no stream):
 
 ```text
 dsh-superagent: webhook missed: gitea-home (acme/widgets) stored 1 new Trigger on #12 in a poll round its 86400s interval started, with no wake

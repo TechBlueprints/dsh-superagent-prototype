@@ -110,14 +110,14 @@ describe('the missed-webhook line', () => {
   })
   afterEach(() => { vi.restoreAllMocks() })
   /** Runs watchForge on a fake instance whose rounds store `plan`'s Triggers in turn (the last one when it runs out). */
-  function watch(plan: (Trigger[] | Error)[], settings: Record<string, unknown> = config) {
+  function watch(plan: (Trigger[] | Error)[], settings: Record<string, unknown> = config, instance = 'gitea-x', kind = 'gitea') {
     const waker = new Waker()
     const controller = new AbortController()
     let rounds = 0
-    const ctx = { instance: 'gitea-x', ready: Promise.resolve(), configured: () => true, report: vi.fn(),
-      deployment: { forges: { 'gitea-x': { kind: 'gitea', repository: 'acme/widgets' } } },
+    const ctx = { instance, ready: Promise.resolve(), configured: () => true, report: vi.fn(),
+      deployment: { forges: { [instance]: { kind, repository: 'acme/widgets' } } },
       config: () => settings } as unknown as SourceContext
-    const running = watchForge(ctx, controller.signal, 'gitea', waker, async (_ctx, _signal, stored) => {
+    const running = watchForge(ctx, controller.signal, kind, waker, async (_ctx, _signal, stored) => {
       const step = plan[Math.min(rounds, plan.length - 1)]!
       rounds += 1
       if (step instanceof Error) { stored.push(trigger('9')); throw step }
@@ -150,6 +150,20 @@ describe('the missed-webhook line', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(w.rounds()).toBe(2)
     expect(written).toEqual([expect.stringContaining('webhook missed: gitea-x (acme/widgets) stored 1 new Trigger on #9')])
+    await w.stop()
+  })
+
+  it('is written for a GitHub instance a webhook wakes, whose settings take the switch', async () => {
+    const base = { repository: 'acme/widgets', cli: 'gh' }
+    const parsed = githubKind.schema.parse({ ...base, pollSeconds: 86_400, webhook: true })
+    expect(parsed.webhook).toBe(true)
+    expect(githubKind.schema.parse(base).webhook).toBe(false)
+    expect(githubKind.fields?.find(field => field.key === 'webhook')).toMatchObject({ type: 'switch', advanced: true })
+    const w = watch([[], [trigger('3')]], parsed as unknown as Record<string, unknown>, 'github', 'github')
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(w.rounds()).toBe(2)
+    expect(written).toEqual(['dsh-superagent: webhook missed: github (acme/widgets) stored 1 new Trigger on #3'
+      + ' in a poll round its 86400s interval started, with no wake\n'])
     await w.stop()
   })
 

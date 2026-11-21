@@ -84,7 +84,7 @@ function github(h: ReturnType<typeof host>, routes: Record<string, unknown>): st
     const path = reads.at(-1)!.split('?')[0]!
     const list = /\/(comments|reviews|statuses)$/.test(path) ? [] : refused(404, 'Not Found')
     const route = routes[path] ?? (path.endsWith('/check-runs') ? { check_runs: [] } : list)
-    const value: unknown = typeof route === 'function' ? (route as () => unknown)() : route
+    const value: unknown = typeof route === 'function' ? (route as (read: string) => unknown)(reads.at(-1)!) : route
     if (value instanceof Error) throw value
     if (args.includes('--include')) return `HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify(value)}`
     return JSON.stringify(args.includes('--slurp') ? [value] : value)
@@ -590,6 +590,42 @@ describe('github source', () => {
     await pollRound(h, undefined, stored)
     expect(h.receive).toHaveBeenCalledTimes(2)
     expect(stored).toEqual([h.receive.mock.calls[1]![0]])
+    h.store.close()
+  })
+  it('takes in what a notification names although GitHub wrote it after a round that found nothing, and only once', async () => {
+    const h = host()
+    h.store.set('github-since', new Date(Date.now() - 3600_000).toISOString())
+    // Issue #3 is opened mentioning the agent, and #7 (an older Issue) gets a mention, 10 s before a wake's round;
+    // GitHub writes their notifications 23 s after, dated at the event, so that round lists nothing.
+    const event = new Date(Date.now() - 10_000).toISOString()
+    const mention: GithubComment = { id: 70, body: '@agent-bot this one too', user: { login: 'alice', type: 'User' },
+      html_url: 'https://github.com/acme/widgets/issues/7#issuecomment-70', created_at: event, updated_at: event }
+    let written = false
+    const since = (read: string) => Date.parse(new URL(read, 'https://api.github.com/').searchParams.get('since')!)
+    const listed = (read: string) => written
+      ? [{ ...notification(3), updated_at: event }, { ...notification(7), updated_at: event }].filter(item => Date.parse(item.updated_at) >= since(read))
+      : []
+    const reads = github(h, { notifications: listed, 'issues/3': issue(3, { body: '@agent-bot please look', created_at: event }),
+      'issues/7': issue(7, { created_at: '2026-08-01T00:00:00Z' }), 'issues/7/comments': [mention] })
+    const first: Trigger[] = []
+    await pollRound(h, undefined, first)
+    expect(first).toEqual([])
+    expect(Date.parse(h.store.get<string>('github-since')!)).toBeLessThan(Date.parse(event))
+    written = true
+    const second: Trigger[] = []
+    await pollRound(h, undefined, second)
+    expect(second.map(trigger => trigger.id).sort())
+      .toEqual([key('github-issue', '3'), commentTrigger(mention, { number: 7, isPr: false }, 'conversation', 'agent-bot').id].sort())
+    expect(second.map(trigger => trigger.addressed)).toEqual(['mention', 'mention'])
+    // A round within the overlap lists them again and reads each Issue from its own cursor, past what it took in.
+    const third: Trigger[] = []
+    const before = { received: h.receive.mock.calls.length, read: reads.length }
+    await pollRound(h, undefined, third)
+    expect(bare(reads.slice(before.read))).toEqual(['notifications', 'issues/7', 'issues/7/comments', 'issues/3', 'issues/3/comments'])
+    expect(h.receive.mock.calls.length).toBe(before.received)
+    expect(third).toEqual([])
+    // Were they read again, their ids would make them duplicates the Engine does not store, and no round would count them.
+    for (const trigger of second) expect(await h.receive(trigger)).toBe('duplicate')
     h.store.close()
   })
   it('reads each notified Issue alone and reads a failed one again next round, from where it was', async () => {
@@ -1142,7 +1178,7 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(pollFailure(2, 3, eof)).toBeUndefined()
   expect(pollFailure(3, 3, eof)).toEqual({ state: 'error', detail: '3 consecutive failed polls; last: Error: Get "https://api.github.com/x": EOF', code: 'pollFailures', values: { count: '3', error: 'Error: Get "https://api.github.com/x": EOF' } })
   expect(githubKind.schema.parse({})).toEqual({ host: 'github.com', repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
-    observePulls: false, observeComments: false, observeCi: false })
+    observePulls: false, observeComments: false, observeCi: false, webhook: false })
 })
 describe('feishu event consumer', () => {
   let dir: string

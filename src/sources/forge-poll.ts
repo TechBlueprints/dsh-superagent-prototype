@@ -261,7 +261,20 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal, stored
   ctx.report(entry(ctx), { state: 'ready', detail: `${count} notifications; next poll ≥ ${next}s${dropped}`, at: round.started })
   return interval
 }
-/** Reads notifications since the cursor and each Issue or PR they name, advancing the cursor atomically with the retry map for failed reads; deleted (410) Issues are dropped once their error is recorded. */
+/**
+ * How far back of a round's start the notification cursor it leaves reaches. A forge writes a notification some time after
+ * its event (GitHub 22 to 24 s, Gitea about 6 s, measured 2026-11), dated between the two, so a round that starts in
+ * between finds nothing; the next round still lists it, and still takes in the new Issue's body or comment it names, as
+ * long as the forge writes it within this overlap of its event. What the
+ * overlap reads again has the same Trigger ids and is a duplicate the Engine does not store again, so it is neither new
+ * work nor counted on the missed-webhook line.
+ */
+export const NOTIFICATION_OVERLAP_MS = 2 * 60_000
+/**
+ * Reads notifications since the cursor and each Issue or PR they name, advancing the cursor (to `NOTIFICATION_OVERLAP_MS`
+ * before the round's start) atomically with the retry map for failed reads; deleted (410) Issues are dropped once their
+ * error is recorded.
+ */
 async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ count: number; interval: number }> {
   const { state } = ctx
   const { since: cursor, retries: retryKey } = keys(ctx)
@@ -308,7 +321,7 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
       delete retries[id]
     }
   }
-  ctx.atomic(() => { state.set(cursor, cursorAt(round.started)); state.set(retryKey, retries) })
+  ctx.atomic(() => { state.set(cursor, cursorAt(round.started, NOTIFICATION_OVERLAP_MS)); state.set(retryKey, retries) })
   return { count: notifications.length, interval }
 }
 async function readNotified(ctx: SourceContext, round: Round, ref: Ref, item: Retry): Promise<void> {

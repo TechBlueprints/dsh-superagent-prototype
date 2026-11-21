@@ -12,8 +12,11 @@ export function polled(ctx: SourceContext, thread: Thread, now = Date.now()): bo
     .map(Date.parse).filter(Number.isFinite)
   return now - Math.max(...times) < POLL_HORIZON_MS
 }
-/** Steps a poll start timestamp back by 5 seconds so late-arriving remote events are not missed; deterministic trigger IDs deduplicate overlaps. */
-export const cursorAt = (started: string): string => new Date(Date.parse(started) - 5000).toISOString()
+/**
+ * Steps a poll start timestamp back by `overlapMs` (5 seconds unless given) so late-arriving remote events are not missed;
+ * deterministic trigger IDs deduplicate overlaps.
+ */
+export const cursorAt = (started: string, overlapMs = 5000): string => new Date(Date.parse(started) - overlapMs).toISOString()
 /** Polls each subscribed Thread of `source` within the horizon independently; records failures on the Thread as `pollError` (unless `stopped()`) and clears `pollError` on success. */
 export async function pollThreads(ctx: SourceContext, source: string, stopped: () => boolean, poll: (thread: Thread) => Promise<void>,
   skip: (thread: Thread) => boolean = () => false): Promise<void> {
